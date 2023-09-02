@@ -57,7 +57,7 @@ use platform_mod
   ! NF90_FILL_REAL has value of 9.9692099683868690e+36.
   USE netcdf, ONLY: NF_FILL_REAL => NF90_FILL_REAL
 #endif
-  use fms2_io_mod
+  use fms2_io_mod, only: FmsNetcdfFile_T, FmsNetcdfDomainFile_T, FmsNetcdfUnstructuredDomainFile_T
 
   IMPLICIT NONE
 

@@ -74,7 +74,8 @@ use,intrinsic :: iso_c_binding, only: c_double,c_float,c_int64_t, &
   USE time_manager_mod, ONLY: get_calendar_type
   USE mpp_mod, ONLY: mpp_npes
   USE constants_mod, ONLY: SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE
-  USE fms2_io_mod
+  use fms2_io_mod, only: FmsNetcdfFile_T, FmsNetcdfDomainFile_T, FmsNetcdfUnstructuredDomainFile_T,&
+       & check_if_open, close_file, get_instance_filename
   USE fms_diag_bbox_mod, ONLY: fmsDiagIbounds_type
 #ifdef use_netCDF
   USE netcdf, ONLY: NF90_CHAR

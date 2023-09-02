@@ -53,7 +53,10 @@ use,intrinsic :: iso_c_binding, only: c_double,c_float,c_int64_t, &
   use mpp_domains_mod, only: mpp_get_UG_domain_pelist
   use mpp_mod,         only: mpp_gather
   use mpp_mod,         only: uppercase,lowercase
-  use fms2_io_mod
+  use fms2_io_mod,     only: FmsNetcdfFile_T, FmsNetcdfDomainFile_T, FmsNetcdfUnstructuredDomainFile_T,&
+       & check_if_open, open_file, register_global_attribute, register_axis, variable_exists,&
+       & register_variable_attribute, unlimited, write_data, open_check, flush_file, register_field,&
+       & set_fileobj_time_name, get_global_io_domain_indices, get_instance_filename
 
   IMPLICIT NONE
 
