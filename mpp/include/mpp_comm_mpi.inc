@@ -1417,4 +1417,9 @@ subroutine mpp_type_free(dtype)
         call increment_current_clock(EVENT_TYPE_FREE, MPP_TYPE_BYTELEN_)
 
 end subroutine mpp_type_free
+
+function get_mpp_comm()
+  integer :: get_mpp_comm
+  get_mpp_comm = mpp_comm_private
+end function get_mpp_comm
 !> @}

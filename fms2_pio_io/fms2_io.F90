@@ -30,8 +30,19 @@ use netcdf_io_mod
 use fms_netcdf_domain_io_mod
 use fms_netcdf_unstructured_domain_io_mod
 use blackboxio
-use mpp_mod, only: mpp_init, input_nml_file, mpp_error, FATAL
+use mpp_mod, only: mpp_init, input_nml_file, mpp_error, FATAL, stdout
+use mpp_mod, only: mpp_pe, mpp_npes, get_mpp_comm, mpp_root_pe
 use mpp_domains_mod, only: mpp_domains_init
+
+use pio, only : PIO_init, pio_createfile, PIO_initdecomp
+use pio, only : pio_createfile, pio_openfile, pio_file_is_open
+use pio, only : File_desc_t, var_desc_t, iosystem_desc_t, IO_desc_t
+use pio, only : pio_write, pio_clobber, pio_nowrite
+use pio, only : PIO_put_att, pio_inquire, PIO_get_local_array_size
+use pio, only : pio_iotype_netcdf, pio_iotype_pnetcdf
+use pio, only : PIO_set_log_level
+use pio, only : PIO_DOUBLE, PIO_REAL, PIO_INT
+use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA
 implicit none
 private
 
@@ -389,6 +400,17 @@ logical :: shuffle = .false. !< Flag indicating whether to use the netcdf shuffl
 namelist / fms2_io_nml / &
                       ncchksz, netcdf_default_format, header_buffer_val, deflate_level, shuffle
 
+! pio-related members
+character(len=64)   :: pio_netcdf_format, pio_typename
+integer             :: pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_log_level
+integer             :: pio_optbase  ! Start index of I/O processors
+namelist / fms2_pio_nml / &
+                      pio_netcdf_format, pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_typename,&
+                      pio_log_level, pio_optbase
+
+type(iosystem_desc_t) :: pio_iosystem     ! The ParallelIO system set up by PIO_init
+integer               :: pio_iotype       ! PIO_IOTYPE_NETCDF or PNETCDF
+
 contains
 
 !> @brief Reads the fms2_io_nml
@@ -415,9 +437,75 @@ subroutine fms2_io_init ()
   endif
   call netcdf_io_init (ncchksz,header_buffer_val,netcdf_default_format, deflate_level, shuffle)
   call blackboxio_init (ncchksz)
+  call fms2_pio_init ()
 !> Mark the fms2_io as initialized
   fms2_io_is_initialized = .true.
 end subroutine fms2_io_init
+
+subroutine fms2_pio_init ()
+  integer :: mystat
+  ! local
+  integer :: unit_begin, unit_end, unit_nml, io_status, unit
+  logical :: opened
+  integer :: pe, npes, localcomm
+  integer :: numAggregator = 0 !TODO
+  integer :: ierr
+
+  ! default values for pio_nml namelist vars:
+  pio_netcdf_format = "64bit_offset"
+  pio_typename = "netcdf"
+  pio_numiotasks = 1
+  pio_rearranger = 1 
+  pio_root = 1
+  pio_stride = 32
+  pio_optbase = 1
+  pio_log_level = 1
+
+  READ (input_nml_file, NML=fms2_pio_nml, IOSTAT=mystat)
+
+  select case(trim(pio_typename))
+  case ("netcdf")
+    pio_iotype = pio_iotype_netcdf
+  case ("pnetcdf")
+    pio_iotype = pio_iotype_pnetcdf
+  case default
+    call mpp_error(FATAL,'Unknown PIO filetype')
+  end select
+
+  pe = mpp_pe()
+  npes = mpp_npes()
+  localcomm = get_mpp_comm()
+
+  if (pe==mpp_root_pe()) then
+    write(stdout(),*) "fms2_pio_init namelist ---",&
+      ' pio_netcdf_format: ', trim(pio_netcdf_format), &
+      ' pio_typename: ', trim(pio_typename), &
+      ' pio_numiotasks: ', pio_numiotasks, &
+      ' pio_rearranger: ', pio_rearranger, &
+      ' pio_root: ', pio_root, &
+      ' pio_stride: ', pio_stride, &
+      ' pio_optbase: ', pio_optbase, &
+      ' pio_log_level: ', pio_log_level
+  endif 
+
+  ! todo: here. add consistency checks for npes, numiotasks, stride, etc.
+
+  !initialize PIO
+  call PIO_init(    &
+    pe,             & ! MPI rank
+    localcomm,      & ! MPI communicator
+    pio_numiotasks, & ! Number of iotasks
+    numAggregator,  & ! number of aggregators to use
+    pio_stride,     & ! stride
+    pio_rearranger, & ! form of rearrangement
+    pio_iosystem,   & ! The ParallelIO system set up by PIO_init
+    pio_optbase )     ! Start index of I/O processors (optional)
+
+  ierr = PIO_set_log_level(pio_log_level)
+
+  if (pe==mpp_root_pe()) write(stdout(),*) "PIO initialized by FMS2 io module."
+
+end subroutine fms2_pio_init
 
 end module fms2_io_mod
 !> @}

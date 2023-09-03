@@ -217,6 +217,9 @@ private
   public :: mpp_broadcast, mpp_init, mpp_exit
   public :: mpp_gather, mpp_scatter, mpp_alltoall
   public :: mpp_type, mpp_byte, mpp_type_create, mpp_type_free
+#if defined(use_libMPI)
+  public :: get_mpp_comm
+#endif
 
   !*********************************************************************
   !
