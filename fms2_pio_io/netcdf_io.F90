@@ -32,6 +32,17 @@ use netcdf
 use mpp_mod
 use fms_io_utils_mod
 use platform_mod
+use mpp_mod, only: mpp_pe, mpp_npes, get_mpp_comm, mpp_root_pe, stdout
+
+use pio, only : PIO_init, pio_createfile, PIO_initdecomp
+use pio, only : pio_createfile, pio_openfile, pio_file_is_open, PIO_closefile
+use pio, only : File_desc_t, var_desc_t, iosystem_desc_t, IO_desc_t
+use pio, only : pio_write, pio_clobber, pio_noclobber, pio_nowrite
+use pio, only : PIO_put_att, pio_inquire, PIO_get_local_array_size
+use pio, only : pio_iotype_netcdf, pio_iotype_pnetcdf
+use pio, only : PIO_set_log_level
+use pio, only : PIO_DOUBLE, PIO_REAL, PIO_INT
+use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA
 implicit none
 private
 
@@ -149,6 +160,7 @@ type, public :: FmsNetcdfFile_t
   character (len=20) :: time_name
   type(dimension_information) :: bc_dimensions !<information about the current dimensions for regional
                                                !! restart variables
+  type (File_desc_t) :: file_desc
 
 endtype FmsNetcdfFile_t
 
@@ -334,6 +346,18 @@ end interface is_valid
 !> @addtogroup netcdf_io_mod
 !> @{
 
+! pio-related members
+logical             :: pio_initialized = .false.
+character(len=64)   :: pio_netcdf_format, pio_typename
+integer             :: pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_log_level
+integer             :: pio_optbase  ! Start index of I/O processors
+namelist / fms2_pio_nml / &
+                      pio_netcdf_format, pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_typename,&
+                      pio_log_level, pio_optbase
+
+type(iosystem_desc_t) :: pio_iosystem     ! The ParallelIO system set up by PIO_init
+integer               :: pio_iotype       ! PIO_IOTYPE_NETCDF or PNETCDF
+
 contains
 
 !> @brief Accepts the namelist fms2_io_nml variables relevant to netcdf_io_mod
@@ -365,7 +389,76 @@ logical,              intent(in) :: shuffle               !< Flag indicating whe
      '. The acceptable values are "64bit", "classic", "netcdf4". Check fms2_io_nml: netcdf_default_format')
  endif
 
+ call fms2_pio_init()
+
 end subroutine netcdf_io_init
+
+
+subroutine fms2_pio_init ()
+  integer :: mystat
+  ! local
+  integer :: unit_begin, unit_end, unit_nml, io_status, unit
+  logical :: opened
+  integer :: pe, npes, localcomm
+  integer :: numAggregator = 0 !TODO
+  integer :: ierr
+
+  ! default values for pio_nml namelist vars:
+  pio_netcdf_format = "64bit_offset"
+  pio_typename = "netcdf"
+  pio_numiotasks = 1
+  pio_rearranger = 1 
+  pio_root = 1
+  pio_stride = 32
+  pio_optbase = 1
+  pio_log_level = 1
+
+  READ (input_nml_file, NML=fms2_pio_nml, IOSTAT=mystat)
+
+  select case(trim(pio_typename))
+  case ("netcdf")
+    pio_iotype = pio_iotype_netcdf
+  case ("pnetcdf")
+    pio_iotype = pio_iotype_pnetcdf
+  case default
+    call mpp_error(FATAL,'Unknown PIO filetype')
+  end select
+
+  pe = mpp_pe()
+  npes = mpp_npes()
+  localcomm = get_mpp_comm()
+
+  if (pe==mpp_root_pe()) then
+    write(stdout(),*) "fms2_pio_init namelist ---",&
+      ' pio_netcdf_format: ', trim(pio_netcdf_format), &
+      ' pio_typename: ', trim(pio_typename), &
+      ' pio_numiotasks: ', pio_numiotasks, &
+      ' pio_rearranger: ', pio_rearranger, &
+      ' pio_root: ', pio_root, &
+      ' pio_stride: ', pio_stride, &
+      ' pio_optbase: ', pio_optbase, &
+      ' pio_log_level: ', pio_log_level
+  endif 
+
+  ! todo: here. add consistency checks for npes, numiotasks, stride, etc.
+
+  !initialize PIO
+  call PIO_init(    &
+    pe,             & ! MPI rank
+    localcomm,      & ! MPI communicator
+    pio_numiotasks, & ! Number of iotasks
+    numAggregator,  & ! number of aggregators to use
+    pio_stride,     & ! stride
+    pio_rearranger, & ! form of rearrangement
+    pio_iosystem,   & ! The ParallelIO system set up by PIO_init
+    pio_optbase )     ! Start index of I/O processors (optional)
+
+  !todo ierr = PIO_set_log_level(pio_log_level)
+
+  if (pe==mpp_root_pe()) write(stdout(),*) "PIO initialized by FMS2 io module."
+  pio_initialized = .true.
+
+end subroutine fms2_pio_init
 
 !> @brief Check for errors returned by netcdf.
 !! @internal
@@ -529,6 +622,146 @@ function get_variable_type(ncid, varid, msg) &
   call check_netcdf_code(err, msg)
 end function get_variable_type
 
+function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart, dont_add_res_to_filename) &
+  result(success)
+  class(FmsNetcdfFile_t), intent(inout) :: fileobj !< File object.
+  character(len=*), intent(in) :: path !< File path.
+  character(len=*), intent(in) :: mode !< File mode.  Allowed values are:
+                                       !! "read", "append", "write", or
+                                       !! "overwrite".
+  character(len=*), intent(in), optional :: nc_format !< Netcdf format that
+                                                     !! new files are written
+                                                     !! as.  Allowed values
+                                                     !! are: "64bit", "classic",
+                                                     !! or "netcdf4". Defaults to
+                                                     !! "64bit". This overwrites
+                                                     !! the value set in the fms2io
+                                                     !! namelist
+  integer, dimension(:), intent(in), optional :: pelist !< List of ranks associated
+                                                        !! with this file.  If not
+                                                        !! provided, only the current
+                                                        !! rank will be able to
+                                                        !! act on the file.
+  logical, intent(in), optional :: is_restart !< Flag telling if this file
+                                              !! is a restart file.  Defaults
+                                              !! to false.
+  logical, intent(in), optional :: dont_add_res_to_filename !< Flag indicating not to add
+                                              !! ".res" to the filename
+  logical :: success
+
+  integer :: nc_format_param
+  integer :: err
+  character(len=256) :: buf !< Filename with .res in the filename if it is a restart
+  character(len=256) :: buf2 !< Filename with the filename appendix if there is one
+  logical :: is_res
+  logical :: dont_add_res !< flag indicated to not add ".res" to the filename
+  integer :: nmode
+
+  if (.not. pio_initialized) then
+    call mpp_error(FATAL, "Unknown file mode encountered in netcdf_file_open_pio")
+  endif
+
+  if (allocated(fileobj%is_open)) then
+    if (fileobj%is_open) then
+      success = .true.
+      return
+    endif
+  endif
+    !< Only add ".res" to the file path if is_restart is set to true
+  !! and dont_add_res_to_filename is set to false.
+  is_res = .false.
+  if (present(is_restart)) then
+    is_res = is_restart
+  endif
+  dont_add_res = .false.
+  if (present(dont_add_res_to_filename)) then
+    dont_add_res = dont_add_res_to_filename
+  endif
+
+  if (is_res .and. .not. dont_add_res) then
+    call restart_filepath_mangle(buf, trim(path))
+  else
+    call string_copy(buf, trim(path))
+  endif
+
+  !< If it is a restart add the filename_appendix to the filename
+  if (is_res) then
+     call get_instance_filename(trim(buf), buf2)
+  else
+     call string_copy(buf2, trim(buf))
+  endif
+
+  !Check if the file exists.
+  success = .true.
+  if (string_compare(mode, "read", .true.) .or. string_compare(mode, "append", .true.)) then
+    success = file_exists(buf2)
+    if (.not. success) then
+      return
+    endif
+  endif
+
+  !Store properties in the derived type.
+  call string_copy(fileobj%path, trim(buf2))
+  ! if passed, ignore pelist and do not store:
+  ! - pelist, io_root, is_root
+  fileobj%is_netcdf4 = .false.
+
+  if (string_compare(mode, "read", .true.)) then
+    nmode = pio_nowrite
+  else if (string_compare(mode, "write", .true.)) then
+    nmode = pio_write
+  else if (string_compare(mode, "append", .true.)) then
+    nmode = pio_noclobber
+  else if (string_compare(mode, "overwrite", .true.)) then
+    if (file_exists(buf2)) then
+      nmode = pio_write
+    else
+      nmode = pio_clobber 
+    endif
+  else
+    call mpp_error(FATAL, "Unknown file mode encountered in netcdf_file_open_pio")
+  endif
+
+  if (trim(pio_netcdf_format) == "64bit_offset" .or. trim(pio_netcdf_format) == "64BIT_OFFSET") then
+    nmode = ior(nmode, PIO_64BIT_OFFSET)
+    call string_copy(fileobj%nc_format, "64bit_offset")
+  else if (trim(pio_netcdf_format) == "64bit_data" .or. trim(pio_netcdf_format) == "64BIT_DATA") then
+    nmode = ior(nmode, PIO_64BIT_DATA)
+    call string_copy(fileobj%nc_format, "64bit_data")
+  else
+    call mpp_error(FATAL,'Cannot determine pio_netcdf_format')
+  endif
+
+  if (nmode == pio_nowrite .or. nmode == pio_noclobber) then
+    err = pio_createfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, nmode)
+  else
+    err = pio_openfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, nmode)
+  endif
+  call check_netcdf_code(err, "netcdf_file_open:"//trim(fileobj%path))
+
+  fileobj%ncid = fileobj%file_desc%fh 
+  fileobj%is_diskless = .false.
+
+  fileobj%is_restart = is_res
+  if (fileobj%is_restart) then
+    allocate(fileobj%restart_vars(max_num_restart_vars))
+    fileobj%num_restart_vars = 0
+  endif
+  fileobj%is_readonly = string_compare(mode, "read", .true.)
+  fileobj%mode_is_append = string_compare(mode, "append", .true.)
+  allocate(fileobj%compressed_dims(max_num_compressed_dims))
+  fileobj%num_compressed_dims = 0
+  ! Set the is_open flag to true for this file object.
+  if (.not.allocated(fileobj%is_open)) allocate(fileobj%is_open)
+  fileobj%is_open = .true.
+  print *, "pio-dbg -- opened: ", path
+
+  fileobj%bc_dimensions%xlen = 0
+  fileobj%bc_dimensions%ylen = 0
+  fileobj%bc_dimensions%zlen = 0
+  fileobj%bc_dimensions%cur_dim_len = 0
+
+end function netcdf_file_open_pio
 
 !> @brief Open a netcdf file.
 !! @return .true. if open succeeds, or else .false.
@@ -566,6 +799,12 @@ function netcdf_file_open(fileobj, path, mode, nc_format, pelist, is_restart, do
   character(len=256) :: buf2 !< Filename with the filename appendix if there is one
   logical :: is_res
   logical :: dont_add_res !< flag indicated to not add ".res" to the filename
+
+  print *, "pio-dbg --  attempting to open", trim(path), mode
+  if (.not. string_compare(mode, "read", .true.)) then
+    success = netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart, dont_add_res_to_filename)
+    return
+  endif 
 
   if (allocated(fileobj%is_open)) then
     if (fileobj%is_open) then
@@ -685,12 +924,53 @@ end function netcdf_file_open
 
 
 !> @brief Close a netcdf file.
+subroutine netcdf_file_close_pio(fileobj)
+
+  class(FmsNetcdfFile_t),intent(inout) :: fileobj !< File object.
+
+  integer :: err
+  integer :: i
+
+  print *, "pio-dbg - closing file", trim(fileobj%path), fileobj%is_open
+
+  call PIO_closefile(fileobj%file_desc)
+
+  if (allocated(fileobj%is_open)) fileobj%is_open = .false.
+  fileobj%path = missing_path
+  fileobj%ncid = missing_ncid
+  if (allocated(fileobj%restart_vars)) then
+    deallocate(fileobj%restart_vars)
+  endif
+  fileobj%is_restart = .false.
+  fileobj%num_restart_vars = 0
+  do i = 1, fileobj%num_compressed_dims
+    if (allocated(fileobj%compressed_dims(i)%npes_corner)) then
+      deallocate(fileobj%compressed_dims(i)%npes_corner)
+    endif
+    if (allocated(fileobj%compressed_dims(i)%npes_nelems)) then
+      deallocate(fileobj%compressed_dims(i)%npes_nelems)
+    endif
+  enddo
+  if (allocated(fileobj%compressed_dims)) then
+    deallocate(fileobj%compressed_dims)
+  endif
+  print *, "pio-dbg -- closed: ", trim(fileobj%path), allocated(fileobj%is_open), fileobj%is_open
+end subroutine netcdf_file_close_pio
+
+
+!> @brief Close a netcdf file.
 subroutine netcdf_file_close(fileobj)
 
   class(FmsNetcdfFile_t),intent(inout) :: fileobj !< File object.
 
   integer :: err
   integer :: i
+
+  print *, "pio-dbg --  attempting to close", trim(fileobj%path)
+  if (.not. fileobj%is_readonly) then
+    call netcdf_file_close_pio(fileobj)
+    return
+  endif 
 
   if (fileobj%is_root) then
     err = nf90_close(fileobj%ncid)
