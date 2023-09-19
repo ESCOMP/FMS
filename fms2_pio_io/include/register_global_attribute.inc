@@ -38,32 +38,30 @@ subroutine register_global_attribute_0d(fileobj, &
         select type(attribute_value)
             type is (character(len=*))
                 if (.not. present(str_len)) call error("register_global_attribute_0d: Need to include str length")
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   pio_global, &
                                    trim(attribute_name), &
                                    trim(attribute_value(1:str_len)))
             type is (integer(kind=i4_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   pio_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             type is (integer(kind=i8_kind))
                 if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
-                                               & ": 64 bit integers are only supported with 'netcdf4' file format"//  &
-                                               & ". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
-                                               & "add nc_format='netcdf4' to your open_file call")
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
-                                   trim(attribute_name), &
-                                   attribute_value)
+                                               & ": 64 bit integers are not supported with PIO")
+                !err = PIO_put_att(fileobj%ncid, &
+                !                   pio_global, &
+                !                   trim(attribute_name), &
+                !                   attribute_value)
             type is (real(kind=r4_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   pio_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             type is (real(kind=r8_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   pio_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             class default
@@ -89,27 +87,25 @@ subroutine register_global_attribute_1d(fileobj, &
         select type(attribute_value)
 
             type is (integer(kind=i4_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   PIO_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             type is (integer(kind=i8_kind))
                 if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
-                                                &": 64 bit integers are only supported with 'netcdf4' file format"//&
-                                                &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
-                                                &"add nc_format='netcdf4' to your open_file call")
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
-                                   trim(attribute_name), &
-                                   attribute_value)
+                                               & ": 64 bit integers are not supported with PIO")
+                !err = nf90_put_att(fileobj%ncid, &
+                !                   nf90_global, &
+                !                   trim(attribute_name), &
+                !                   attribute_value)
             type is (real(kind=r4_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   PIO_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             type is (real(kind=r8_kind))
-                err = nf90_put_att(fileobj%ncid, &
-                                   nf90_global, &
+                err = PIO_put_att(fileobj%ncid, &
+                                   PIO_global, &
                                    trim(attribute_name), &
                                    attribute_value)
             class default
