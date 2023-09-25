@@ -48,6 +48,8 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
   integer :: tlen
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  print *, "ERRORline", 51, "write_data.inc"; call error("PIO version not implemented!!!")
+
   append_error_msg = "netcdf_write_data_0d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
   if (fileobj%is_root) then
     c(:) = 1
@@ -134,6 +136,8 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
   integer :: j
   integer :: tlen
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  print *, "ERRORline", 140, "write_data.inc"; call error("PIO version not implemented!!!")
 
   append_error_msg = "netcdf_write_data_1d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
@@ -227,6 +231,8 @@ subroutine netcdf_write_data_2d(fileobj, variable_name, variable_data, unlim_dim
   integer, dimension(3) :: e
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  print *, "ERRORline", 234, "write_data.inc"; call error("PIO version not implemented!!!")
+
   append_error_msg = "netcdf_write_data_2d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
   if (fileobj%is_root) then
@@ -292,6 +298,8 @@ subroutine netcdf_write_data_3d(fileobj, variable_name, variable_data, unlim_dim
   integer, dimension(4) :: e
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  print *, "ERRORline", 301, "write_data.inc"; call error("PIO version not implemented!!!")
+
   append_error_msg = "netcdf_write_data_3d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
   if (fileobj%is_root) then
@@ -355,6 +363,8 @@ subroutine netcdf_write_data_4d(fileobj, variable_name, variable_data, unlim_dim
   integer,dimension(5) :: c
   integer, dimension(5) :: e
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  print *, "ERRORline", 368, "write_data.inc"; call error("PIO version not implemented!!!")
 
   append_error_msg = "netcdf_write_data_4d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
@@ -420,6 +430,8 @@ subroutine netcdf_write_data_5d(fileobj, variable_name, variable_data, unlim_dim
   integer,dimension(6) :: c
   integer, dimension(6) :: e
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  print *, "ERRORline", 434, "write_data.inc"; call error("PIO version not implemented!!!")
 
   append_error_msg = "netcdf_write_data_5d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 

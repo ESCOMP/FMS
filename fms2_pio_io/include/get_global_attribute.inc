@@ -40,6 +40,8 @@ subroutine get_global_attribute_0d(fileobj, &
     integer :: err
     character(len=1024), dimension(1) :: charbuf !< 1D Character buffer
 
+  print *, "ERRORline", "get_global_attribute 44"; call error("PIO version not implemented!!!")
+
     if (fileobj%is_root) then
         select type(attribute_value)
             type is (character(len=*))
@@ -130,6 +132,8 @@ subroutine get_global_attribute_1d(fileobj, &
                                              !! The broadcast will be done
                                              !! by default.
     integer :: err
+  print *, "ERRORline", "get_global_attribute 136"; call error("PIO version not implemented!!!")
+
     if (fileobj%is_root) then
         select type(attribute_value)
             type is (integer(kind=i4_kind))

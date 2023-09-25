@@ -48,6 +48,8 @@ subroutine get_variable_attribute_0d(fileobj, variable_name, attribute_name, &
   logical :: reproduce_null_char_bug !< Local flag indicating to reproduce the mpp_io bug where
                                      !! the null characters were not removed after reading a string attribute
 
+  print *, "ERRORline", "51 get_variable_Attribute"; call error("PIO version not implemented!!!")
+
   !! If the reproduce_null_char_bug flag is turned on fms2io will not remove the null character
   reproduce_null_char_bug = .false.
   if (present(reproduce_null_char_bug_flag)) reproduce_null_char_bug=reproduce_null_char_bug_flag
@@ -127,6 +129,8 @@ subroutine get_variable_attribute_1d(fileobj, variable_name, attribute_name, &
   integer :: varid
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  print *, "ERRORline", "133 get_variable_Attribute"; call error("PIO version not implemented!!!")
 
   append_error_msg = "get_variable_attribute_1d: file:"//trim(fileobj%path)//"- variable:"//&
                      &trim(variable_name)//" attribute: "//trim(attribute_name)

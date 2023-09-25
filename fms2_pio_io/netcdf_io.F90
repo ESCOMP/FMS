@@ -41,10 +41,11 @@ use pio, only : pio_write, pio_clobber, pio_noclobber, pio_nowrite
 use pio, only : PIO_put_att, pio_inquire, PIO_get_local_array_size
 use pio, only : pio_iotype_netcdf, pio_iotype_pnetcdf
 use pio, only : PIO_set_log_level
-use pio, only : PIO_DOUBLE, PIO_REAL, PIO_INT
+use pio, only : PIO_DOUBLE, PIO_REAL, PIO_INT, PIO_CHAR
 use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA
 use pio, only : pio_redef, pio_enddef, pio_global, pio_inq_dimid
-use pio, only : pio_seterrorhandling, pio_return_error
+use pio, only : pio_seterrorhandling, pio_return_error, pio_def_dim
+use pio, only : pio_def_var, pio_inq_varid, pio_inquire_variable, pio_inquire_dimension
 implicit none
 private
 
@@ -360,6 +361,9 @@ namelist / fms2_pio_nml / &
 type(iosystem_desc_t) :: pio_iosystem     ! The ParallelIO system set up by PIO_init
 integer               :: pio_iotype       ! PIO_IOTYPE_NETCDF or PNETCDF
 
+integer, dimension(200) :: pio_ncids ! todo - remove
+integer :: n_pio_ncids               ! todo - remove
+
 contains
 
 !> @brief Accepts the namelist fms2_io_nml variables relevant to netcdf_io_mod
@@ -370,6 +374,9 @@ integer,              intent(in) :: header_buffer_val     !< Value used in NF__E
 integer,              intent(in) :: deflate_level         !< Netcdf deflate level to use in nf90_def_var
                                                           !! (integer between 1 to 9)
 logical,              intent(in) :: shuffle               !< Flag indicating whether to use the netcdf shuffle filter
+
+ if (deflate_level /= default_deflate_level) call error("Cannot specify use deflate level when PIO is on.")
+ if (shuffle) call error("Cannot shuffle when PIO is on.")
 
  fms2_ncchksz = chksz
  fms2_deflate_level = deflate_level
@@ -383,6 +390,7 @@ logical,              intent(in) :: shuffle               !< Flag indicating whe
      fms2_nc_format_param = nf90_classic_model
      call string_copy(fms2_nc_format, "classic")
  elseif (string_compare(netcdf_default_format, "netcdf4", .true.)) then
+     call error("netcdf4 is currently not supported with PIO.")
      fms2_nc_format_param = nf90_netcdf4
      fms2_is_netcdf4 = .true.
      call string_copy(fms2_nc_format, "netcdf4")
@@ -460,6 +468,7 @@ subroutine fms2_pio_init ()
   if (pe==mpp_root_pe()) write(stdout(),*) "PIO initialized by FMS2 io module."
   pio_initialized = .true.
 
+  n_pio_ncids = 0 ! todo - remove
 end subroutine fms2_pio_init
 
 !> @brief Check for errors returned by netcdf.
@@ -565,6 +574,34 @@ end function get_dimension_id
 !> @brief Get the id of a variable from its name.
 !! @return Variable id, or variable_missing if it doesn't exist.
 !! @internal
+function get_variable_id_pio(ncid, variable_name, msg, allow_failure) &
+  result(varid)
+
+  integer, intent(in) :: ncid !< Netcdf file object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  character(len=*), intent(in) :: msg !< Error message
+  logical, intent(in), optional :: allow_failure !< Flag that prevents
+                                                 !! crash if variable does
+                                                 !! not exist.
+
+  integer :: varid
+
+  integer :: err
+
+  err = pio_inq_varid(ncid, trim(variable_name), varid)
+  if (present(allow_failure)) then
+    if (allow_failure .and. err .eq. nf90_enotvar) then
+      varid = variable_missing
+      return
+    endif
+  endif
+  call check_netcdf_code(err, msg)
+end function get_variable_id_pio
+
+
+!> @brief Get the id of a variable from its name.
+!! @return Variable id, or variable_missing if it doesn't exist.
+!! @internal
 function get_variable_id(ncid, variable_name, msg, allow_failure) &
   result(varid)
 
@@ -605,6 +642,10 @@ function attribute_exists(ncid, varid, attribute_name, msg) &
 
   integer :: err
 
+  if (ncid_handled_by_pio(ncid)) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   err = nf90_inquire_attribute(ncid, varid, trim(attribute_name))
   if (err .eq. nf90_enotatt) then
     att_exists = .false.
@@ -630,6 +671,10 @@ function get_attribute_type(ncid, varid, attname, msg) &
 
   integer :: err
 
+  if (ncid_handled_by_pio(ncid)) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   err = nf90_inquire_attribute(ncid, varid, attname, xtype=xtype)
   call check_netcdf_code(err, msg)
 end function get_attribute_type
@@ -648,6 +693,10 @@ function get_variable_type(ncid, varid, msg) &
   integer :: xtype
 
   integer :: err
+
+  if (ncid_handled_by_pio(ncid)) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   err = nf90_inquire_variable(ncid, varid, xtype=xtype)
   call check_netcdf_code(err, msg)
@@ -686,7 +735,7 @@ function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart
   character(len=256) :: buf2 !< Filename with the filename appendix if there is one
   logical :: is_res
   logical :: dont_add_res !< flag indicated to not add ".res" to the filename
-  integer :: nmode
+  integer :: fmode
 
   if (.not. pio_initialized) then
     call mpp_error(FATAL, "Unknown file mode encountered in netcdf_file_open_pio")
@@ -737,41 +786,36 @@ function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart
   ! - pelist, io_root, is_root
   fileobj%is_netcdf4 = .false.
 
-  if (string_compare(mode, "read", .true.)) then
-    nmode = pio_nowrite
-  else if (string_compare(mode, "write", .true.)) then
-    nmode = pio_write
-  else if (string_compare(mode, "append", .true.)) then
-    nmode = pio_noclobber
-  else if (string_compare(mode, "overwrite", .true.)) then
-    if (file_exists(buf2)) then
-      nmode = pio_write
-    else
-      nmode = pio_clobber 
-    endif
-  else
-    call mpp_error(FATAL, "Unknown file mode encountered in netcdf_file_open_pio")
-  endif
-
+  ! file format mode
   if (trim(pio_netcdf_format) == "64bit_offset" .or. trim(pio_netcdf_format) == "64BIT_OFFSET") then
-    nmode = ior(nmode, PIO_64BIT_OFFSET)
+    fmode = PIO_64BIT_OFFSET
     call string_copy(fileobj%nc_format, "64bit_offset")
   else if (trim(pio_netcdf_format) == "64bit_data" .or. trim(pio_netcdf_format) == "64BIT_DATA") then
-    nmode = ior(nmode, PIO_64BIT_DATA)
+    fmode = PIO_64BIT_DATA
     call string_copy(fileobj%nc_format, "64bit_data")
   else
     call mpp_error(FATAL,'Cannot determine pio_netcdf_format')
   endif
 
-  if (nmode == pio_nowrite .or. nmode == pio_noclobber) then
-    err = pio_createfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, nmode)
+  if (string_compare(mode, "read", .true.)) then
+    err = pio_openfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, pio_nowrite)
+  else if (string_compare(mode, "append", .true.)) then
+    err = pio_openfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, pio_write)
+  else if (string_compare(mode, "write", .true.)) then
+    err = pio_createfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, ior(pio_noclobber, fmode))
+  else if (string_compare(mode, "overwrite", .true.)) then
+    err = pio_createfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, ior(pio_clobber, fmode))
   else
-    err = pio_openfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, nmode)
+    call mpp_error(FATAL, "Unknown file mode encountered in netcdf_file_open_pio")
   endif
   call check_netcdf_code(err, "netcdf_file_open:"//trim(fileobj%path))
 
   fileobj%ncid = fileobj%file_desc%fh 
   fileobj%is_diskless = .false.
+
+  ! todo - remove
+  n_pio_ncids = n_pio_ncids + 1
+  pio_ncids(n_pio_ncids) =  fileobj%ncid
 
   fileobj%is_restart = is_res
   if (fileobj%is_restart) then
@@ -1048,6 +1092,10 @@ function get_compressed_dimension_index(fileobj, dim_name) &
   integer :: dindex
   integer :: i
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   dindex = dimension_not_found
   do i = 1, fileobj%num_compressed_dims
     if (string_compare(fileobj%compressed_dims(i)%dimname, dim_name)) then
@@ -1072,6 +1120,8 @@ subroutine append_compressed_dimension(fileobj, dim_name, npes_corner, &
                                                    !! rank.
 
   integer :: n
+
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
 
   if (get_compressed_dimension_index(fileobj, dim_name) .ne. dimension_not_found) then
     call error("dimension "//trim(dim_name)//" already registered" &
@@ -1107,6 +1157,8 @@ subroutine register_unlimited_compressed_axis(fileobj, dimension_name, dimension
   integer                            :: i          !< For do loops
   integer                            :: err        !< Netcdf error
   integer                            :: dimid      !< Netcdf id for the dimension
+
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
 
   !Gather all local dimension lengths on the I/O root pe.
   allocate(npes_start(size(fileobj%pelist)))
@@ -1158,34 +1210,38 @@ subroutine netcdf_add_dimension(fileobj, dimension_name, dimension_length, &
   dim_len = dimension_length
   if (present(is_compressed)) then
     if (is_compressed) then
-      !Gather all local dimension lengths on the I/O root pe.
-      allocate(npes_start(size(fileobj%pelist)))
-      allocate(npes_count(size(fileobj%pelist)))
-      do i = 1, size(fileobj%pelist)
-        if (fileobj%pelist(i) .eq. mpp_pe()) then
-          npes_count(i) = dim_len
-        else
-          call mpp_recv(npes_count(i), fileobj%pelist(i), block=.false.)
-          call mpp_send(dim_len, fileobj%pelist(i))
-        endif
-      enddo
-      call mpp_sync_self(check=event_recv)
-      call mpp_sync_self(check=event_send)
-      npes_start(1) = 1
-      do i = 1, size(fileobj%pelist)-1
-        npes_start(i+1) = npes_start(i) + npes_count(i)
-      enddo
-      call append_compressed_dimension(fileobj, dimension_name, npes_start, &
-                                       npes_count)
-      dim_len = sum(npes_count)
+      print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+      !!Gather all local dimension lengths on the I/O root pe.
+      !allocate(npes_start(size(fileobj%pelist)))
+      !allocate(npes_count(size(fileobj%pelist)))
+      !do i = 1, size(fileobj%pelist)
+      !  if (fileobj%pelist(i) .eq. mpp_pe()) then
+      !    npes_count(i) = dim_len
+      !  else
+      !    call mpp_recv(npes_count(i), fileobj%pelist(i), block=.false.)
+      !    call mpp_send(dim_len, fileobj%pelist(i))
+      !  endif
+      !enddo
+      !call mpp_sync_self(check=event_recv)
+      !call mpp_sync_self(check=event_send)
+      !npes_start(1) = 1
+      !do i = 1, size(fileobj%pelist)-1
+      !  npes_start(i+1) = npes_start(i) + npes_count(i)
+      !enddo
+      !call append_compressed_dimension(fileobj, dimension_name, npes_start, &
+      !                                 npes_count)
+      !dim_len = sum(npes_count)
     endif
   endif
-  if (fileobj%is_root .and. .not. fileobj%is_readonly) then
-    call set_netcdf_mode(fileobj%ncid, define_mode)
-    err = nf90_def_dim(fileobj%ncid, trim(dimension_name), dim_len, dimid)
-    call check_netcdf_code(err, "Netcdf_add_dimension: file:"//trim(fileobj%path)//" dimension name:"// &
-                         & trim(dimension_name))
+
+  if (trim(dimension_name) == "lath") then
+    print *, "dbglath"
   endif
+
+  call set_netcdf_mode(fileobj%ncid, define_mode)
+  err = pio_def_dim(fileobj%ncid, trim(dimension_name), dim_len, dimid)
+  call check_netcdf_code(err, "Netcdf_add_dimension: file:"//trim(fileobj%path)//" dimension name:"// &
+                       & trim(dimension_name))
 end subroutine netcdf_add_dimension
 
 
@@ -1204,6 +1260,8 @@ subroutine register_compressed_dimension(fileobj, dimension_name, &
   integer :: dsize
   integer :: fdim_size
 
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+
   call append_compressed_dimension(fileobj, dimension_name, npes_corner, npes_nelems)
   dsize = sum(npes_nelems)
   if (fileobj%is_readonly) then
@@ -1220,6 +1278,7 @@ end subroutine register_compressed_dimension
 
 !> @brief Add a variable to a file.
 subroutine netcdf_add_variable(fileobj, variable_name, variable_type, dimensions, chunksizes)
+  !pio-transform: OK
 
   class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
   character(len=*), intent(in) :: variable_name !< Variable name.
@@ -1239,48 +1298,44 @@ subroutine netcdf_add_variable(fileobj, variable_name, variable_type, dimensions
 
   append_error_msg = "netcdf_add_variable: file:"//trim(fileobj%path)//"variable:"//trim(variable_name)
 
-  if (fileobj%is_root) then
-    call set_netcdf_mode(fileobj%ncid, define_mode)
-    if (string_compare(variable_type, "int", .true.)) then
-      vtype = nf90_int
-    elseif (string_compare(variable_type, "int64", .true.)) then
-      if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)//&
-                                               &": 64 bit integers are only supported with 'netcdf4' file format"//&
-                                               &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
-                                               &"add nc_format='netcdf4' to your open_file call")
-      vtype = nf90_int64
-    elseif (string_compare(variable_type, "float", .true.)) then
-      vtype = nf90_float
-    elseif (string_compare(variable_type, "double", .true.)) then
-      vtype = nf90_double
-    elseif (string_compare(variable_type, "char", .true.)) then
-      vtype = nf90_char
-      if (.not. present(dimensions)) then
-        call error("String variables require a string length dimension:"//trim(append_error_msg))
-      endif
-    else
-      call error("Unsupported variable type:"//trim(append_error_msg))
+  call set_netcdf_mode(fileobj%ncid, define_mode)
+  if (string_compare(variable_type, "int", .true.)) then
+    vtype = pio_int
+  elseif (string_compare(variable_type, "int64", .true.)) then
+    if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
+                                             & ": 64 bit integers are not supported with PIO")
+    !if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)//&
+    !                                         &": 64 bit integers are only supported with 'netcdf4' file format"//&
+    !                                         &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
+    !                                         &"add nc_format='netcdf4' to your open_file call")
+    !vtype = nf90_int64
+  elseif (string_compare(variable_type, "float", .true.)) then
+    vtype = pio_real
+  elseif (string_compare(variable_type, "double", .true.)) then
+    vtype = pio_double
+  elseif (string_compare(variable_type, "char", .true.)) then
+    vtype = pio_char
+    if (.not. present(dimensions)) then
+      call error("String variables require a string length dimension:"//trim(append_error_msg))
     endif
-    if (present(dimensions)) then
-      allocate(dimids(size(dimensions)))
-      do i = 1, size(dimids)
-        dimids(i) = get_dimension_id_pio(fileobj%ncid, trim(dimensions(i)),msg=append_error_msg)
-      enddo
-      if (fileobj%is_netcdf4) then
-        err = nf90_def_var(fileobj%ncid, trim(variable_name), vtype, dimids, varid, &
-          &deflate_level=fms2_deflate_level, shuffle=fms2_shuffle, chunksizes=chunksizes)
-      else
-        if (fms2_deflate_level .ne. default_deflate_level .or. fms2_shuffle .or. present(chunksizes)) &
-          &call mpp_error(NOTE,"Not able to use deflate_level or chunksizes if not using netcdf4"// &
-          & " ignoring them")
-        err = nf90_def_var(fileobj%ncid, trim(variable_name), vtype, dimids, varid)
-      endif
-      deallocate(dimids)
-    else
-      err = nf90_def_var(fileobj%ncid, trim(variable_name), vtype, varid)
-    endif
-    call check_netcdf_code(err, append_error_msg)
+  else
+    call error("Unsupported variable type:"//trim(append_error_msg))
   endif
+  if (present(dimensions)) then
+    allocate(dimids(size(dimensions)))
+    do i = 1, size(dimids)
+      dimids(i) = get_dimension_id_pio(fileobj%ncid, trim(dimensions(i)),msg=append_error_msg)
+    enddo
+    if (fileobj%is_netcdf4) then
+      call error("netcdf4 is currently not supported with PIO.")
+    else
+      err = pio_def_var(fileobj%ncid, trim(variable_name), vtype, dimids, varid)
+    endif
+    deallocate(dimids)
+  else
+    err = pio_def_var(fileobj%ncid, trim(variable_name), vtype, varid)
+  endif
+  call check_netcdf_code(err, append_error_msg)
 end subroutine netcdf_add_variable
 
 
@@ -1304,6 +1359,10 @@ function get_variable_compressed_dimension_index(fileobj, variable_name, broadca
   character(len=nf90_max_name), dimension(:), allocatable :: dim_names
   integer :: i
   integer :: j
+ 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   compressed_dimension_index = dimension_not_found
   if (fileobj%is_root) then
@@ -1341,6 +1400,8 @@ subroutine add_restart_var_to_array(fileobj, variable_name)
 
   integer :: i
 
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+
   if (.not. fileobj%is_restart) then
     call error("file "//trim(fileobj%path)//" is not a restart file.")
   endif
@@ -1368,6 +1429,8 @@ subroutine netcdf_save_restart(fileobj, unlim_dim_level)
                                                      !! level.
 
   integer :: i
+
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
 
   if (.not. fileobj%is_restart) then
     call error("file "//trim(fileobj%path)//" is not a restart file.")
@@ -1409,6 +1472,10 @@ subroutine netcdf_restore_state(fileobj, unlim_dim_level)
                                                    !! level.
 
   integer :: i
+
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   if (.not. fileobj%is_restart) then
     call error("file "//trim(fileobj%path)//" is not a restart file.")
@@ -1461,6 +1528,10 @@ function global_att_exists(fileobj, attribute_name, broadcast) &
                                              !! by default.
   logical :: att_exists
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     att_exists = attribute_exists(fileobj%ncid, nf90_global, trim(attribute_name), &
                  & msg="global_att_exists: file:"//trim(fileobj%path)//" attribute name:"//trim(attribute_name))
@@ -1492,6 +1563,10 @@ function variable_att_exists(fileobj, variable_name, attribute_name, &
   logical :: att_exists
 
   integer :: varid
+
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   att_exists = .false.
   if (fileobj%is_root) then
@@ -1527,6 +1602,10 @@ function get_num_dimensions(fileobj, broadcast) &
 
   integer :: err
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     err = nf90_inquire(fileobj%ncid, nDimensions=ndims)
     call check_netcdf_code(err, "get_num_dimensions: file:"//trim(fileobj%path))
@@ -1556,6 +1635,11 @@ subroutine get_dimension_names(fileobj, names, broadcast)
   integer :: ndims
   integer :: i
   integer :: err
+
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
 
   if (fileobj%is_root) then
     ndims = get_num_dimensions(fileobj, broadcast=.false.)
@@ -1666,6 +1750,10 @@ function is_dimension_unlimited(fileobj, dimension_name, broadcast) &
   integer :: err
   integer :: ulim_dimid
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     append_error_msg="is_dimension_unlimited: file:"//trim(fileobj%path)//&
                    & " dimension_name:"//trim(dimension_name)
@@ -1703,6 +1791,10 @@ subroutine get_unlimited_dimension_name(fileobj, dimension_name, broadcast)
   integer :: dimid
   character(len=nf90_max_name), dimension(1) :: buffer
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   dimension_name = ""
   if (fileobj%is_root) then
     err = nf90_inquire(fileobj%ncid, unlimitedDimId=dimid)
@@ -1739,6 +1831,10 @@ subroutine get_dimension_size(fileobj, dimension_name, dim_size, broadcast)
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     append_error_msg = "get_dimension_size: file:"//trim(fileobj%path)//" dimension_name: "//trim(dimension_name)
     if (fileobj%is_readonly) then
@@ -1774,6 +1870,10 @@ function get_num_variables(fileobj, broadcast) &
 
   integer :: err
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     err = nf90_inquire(fileobj%ncid, nVariables=nvars)
     call check_netcdf_code(err, "get_num_variables: file: "//trim(fileobj%path))
@@ -1803,6 +1903,10 @@ subroutine get_variable_names(fileobj, names, broadcast)
   integer :: nvars
   integer :: i
   integer :: err
+
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   if (fileobj%is_root) then
     nvars = get_num_variables(fileobj, broadcast=.false.)
@@ -1844,6 +1948,30 @@ end subroutine get_variable_names
 
 !> @brief Determine if a variable exists.
 !! @return Flag telling if the variable exists.
+function variable_exists_pio(fileobj, variable_name, broadcast) &
+  result(var_exists)
+
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  logical, intent(in), optional :: broadcast !< Flag controlling whether or
+                                             !! not the data will be
+                                             !! broadcasted to non
+                                             !! "I/O root" ranks.
+                                             !! The broadcast will be done
+                                             !! by default.
+  logical :: var_exists
+
+  integer :: varid
+
+  varid = get_variable_id_pio(fileobj%ncid, trim(variable_name), &
+                          msg="variable_exists: file:"//trim(fileobj%path)//" variable:"//trim(variable_name), &
+                          allow_failure=.true.)
+  var_exists = varid .ne. variable_missing
+end function variable_exists_pio
+
+
+!> @brief Determine if a variable exists.
+!! @return Flag telling if the variable exists.
 function variable_exists(fileobj, variable_name, broadcast) &
   result(var_exists)
 
@@ -1859,6 +1987,12 @@ function variable_exists(fileobj, variable_name, broadcast) &
 
   integer :: varid
 
+  if (.not. fileobj%is_readonly) then
+    varid = variable_exists_pio(fileobj, variable_name, broadcast)
+    var_exists = varid .ne. variable_missing
+    return
+  endif
+
   if (fileobj%is_root) then
     varid = get_variable_id(fileobj%ncid, trim(variable_name), &
                             msg="variable_exists: file:"//trim(fileobj%path)//" variable:"//trim(variable_name), &
@@ -1872,6 +2006,32 @@ function variable_exists(fileobj, variable_name, broadcast) &
   endif
   call mpp_broadcast(var_exists, fileobj%io_root, pelist=fileobj%pelist)
 end function variable_exists
+
+
+!> @brief Get the number of dimensions a variable depends on.
+!! @return Number of dimensions that the variable depends on.
+function get_variable_num_dimensions_pio(fileobj, variable_name, broadcast) &
+  result(ndims)
+
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  logical, intent(in), optional :: broadcast !< Flag controlling whether or
+                                             !! not the data will be
+                                             !! broadcasted to non
+                                             !! "I/O root" ranks.
+                                             !! The broadcast will be done
+                                             !! by default.
+  integer :: ndims
+
+  integer :: varid
+  integer :: err
+  character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  append_error_msg = "get_variable_num_dimension: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
+  varid = get_variable_id_pio(fileobj%ncid, trim(variable_name), msg=append_error_msg)
+  err = pio_inquire_variable(fileobj%ncid, varid, ndims=ndims)
+  call check_netcdf_code(err, append_error_msg)
+end function get_variable_num_dimensions_pio
 
 
 !> @brief Get the number of dimensions a variable depends on.
@@ -1893,6 +2053,10 @@ function get_variable_num_dimensions(fileobj, variable_name, broadcast) &
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  if (.not. fileobj%is_readonly) then
+    ndims = get_variable_num_dimensions_pio(fileobj, variable_name, broadcast)
+    return
+  endif
 
   if (fileobj%is_root) then
     append_error_msg = "get_variable_num_dimension: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
@@ -1908,6 +2072,54 @@ function get_variable_num_dimensions(fileobj, variable_name, broadcast) &
   call mpp_broadcast(ndims, fileobj%io_root, pelist=fileobj%pelist)
 end function get_variable_num_dimensions
 
+
+
+
+!> @brief Get the name of a variable's dimensions.
+subroutine get_variable_dimension_names_pio(fileobj, variable_name, dim_names, &
+                                        broadcast)
+
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  character(len=*), dimension(:), intent(inout) :: dim_names !< Array of
+                                                             !! dimension
+                                                             !! names.
+  logical, intent(in), optional :: broadcast !< Flag controlling whether or
+                                             !! not the data will be
+                                             !! broadcasted to non
+                                             !! "I/O root" ranks.
+                                             !! The broadcast will be done
+                                             !! by default.
+
+  integer :: varid
+  integer :: err
+  integer :: ndims
+  integer,dimension(nf90_max_var_dims) :: dimids
+  integer :: i
+  character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+    append_error_msg = "get_variable_dimension_names: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
+
+    varid = get_variable_id_pio(fileobj%ncid, trim(variable_name), msg=append_error_msg)
+    err = pio_inquire_variable(fileobj%ncid, varid, ndims=ndims, &
+                                dimids=dimids)
+    call check_netcdf_code(err, append_error_msg)
+    if (ndims .gt. 0) then
+      if (size(dim_names) .ne. ndims) then
+        call error("'names' has to be the same size of the number of dimensions for the variable."&
+                   &" Check your get_variable_dimension_names call for file "//trim(fileobj%path)//&
+                   &" and variable:"//trim(variable_name))
+      endif
+    else
+      call error("get_variable_dimension_names: the variable: "//trim(variable_name)//" in file: "//trim(fileobj%path)&
+                & //" does not any dimensions. ")
+    endif
+    dim_names(:) = ""
+    do i = 1, ndims
+      err = pio_inquire_dimension(fileobj%ncid, dimids(i), name=dim_names(i))
+      call check_netcdf_code(err, append_error_msg)
+    enddo
+end subroutine get_variable_dimension_names_pio
 
 !> @brief Get the name of a variable's dimensions.
 subroutine get_variable_dimension_names(fileobj, variable_name, dim_names, &
@@ -1932,6 +2144,10 @@ subroutine get_variable_dimension_names(fileobj, variable_name, dim_names, &
   integer :: i
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  if (.not. fileobj%is_readonly) then
+    call get_variable_dimension_names_pio(fileobj, variable_name, dim_names, broadcast) 
+    return
+  endif
 
   if (fileobj%is_root) then
     append_error_msg = "get_variable_dimension_names: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
@@ -2001,6 +2217,10 @@ subroutine get_variable_size(fileobj, variable_name, dim_sizes, broadcast)
   integer :: i
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (fileobj%is_root) then
     append_error_msg = "get_variable_size: file:"//trim(fileobj%path)//" variable:"//trim(variable_name)
     varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
@@ -2064,6 +2284,10 @@ function get_variable_unlimited_dimension_index(fileobj, variable_name, &
   character(len=nf90_max_name), dimension(:), allocatable :: dim_names
   integer :: i
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   unlim_dim_index = no_unlimited_dimension
   if (fileobj%is_root) then
     ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
@@ -2103,6 +2327,10 @@ function get_valid(fileobj, variable_name) &
   real(kind=r8_kind), dimension(2) :: buffer
   integer :: xtype
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
 
   append_error_msg = "get_valid: file:"//trim(fileobj%path)
   if (fileobj%is_root) then
@@ -2584,6 +2812,10 @@ subroutine read_restart_bc(fileobj, unlim_dim_level, ignore_checksum)
 
   integer :: i !< No description
 
+  if (.not. fileobj%is_readonly) then
+    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  endif
+
   if (.not. fileobj%is_restart) then
     call error("file "//trim(fileobj%path)//" is not a restart file.")
   endif
@@ -2618,6 +2850,8 @@ subroutine write_restart_bc(fileobj, unlim_dim_level)
   integer, intent(in), optional :: unlim_dim_level !< Unlimited dimension
                                                      !! level.
   integer :: i !< No description
+
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
 
   if (.not. fileobj%is_restart) then
     call error("file "//trim(fileobj%path)//" is not a restart file. "&
@@ -2684,11 +2918,28 @@ subroutine flush_file(fileobj)
 
   integer :: err !< Netcdf error code
 
+  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+
   if (fileobj%is_root) then
     err = nf90_sync(fileobj%ncid)
     call check_netcdf_code(err, "Flush_file: File:"//trim(fileobj%path))
   endif
 end subroutine flush_file
+
+
+! todo -remove
+function ncid_handled_by_pio(ncid) result(by_pio)
+  logical :: by_pio
+  integer, intent(in) :: ncid
+  integer :: i
+  by_pio = .false.
+  do i=1,n_pio_ncids
+    if (pio_ncids(i) == ncid) then
+        by_pio = .true.
+        return
+    endif
+  enddo
+end function ncid_handled_by_pio
 
 end module netcdf_io_mod
 !> @}

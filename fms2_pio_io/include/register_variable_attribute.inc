@@ -43,6 +43,8 @@ subroutine register_variable_attribute_0d(fileobj, variable_name, attribute_name
   real(kind=r8_kind), dimension(2) :: r64_range
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
+  print *, "ERRORline", 46, "register_variable_attribute.inc"; call error("PIO version not implemented!!!")
+
   append_error_msg = "register_variable_attribute_0d: file:"//trim(fileobj%path)//"- variable:"//&
                      &trim(variable_name)//" attribute: "//trim(attribute_name)
 
@@ -150,6 +152,8 @@ subroutine register_variable_attribute_1d(fileobj, variable_name, attribute_name
   integer :: axtype
   integer :: xtype
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  print *, "ERRORline", 156, "register_variable_attribute.inc"; call error("PIO version not implemented!!!")
 
   append_error_msg = "register_variable_attribute_0d: file:"//trim(fileobj%path)//"- variable:"//&
                      &trim(variable_name)//" attribute: "//trim(attribute_name)
