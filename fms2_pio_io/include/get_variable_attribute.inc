@@ -24,6 +24,66 @@
 !> @{
 
 !> @brief Get the value of a variable's attribute.
+subroutine get_variable_attribute_0d_pio(fileobj, variable_name, attribute_name, &
+                                     attribute_value, broadcast, reproduce_null_char_bug_flag)
+
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  character(len=*), intent(in) :: attribute_name !< Attribute name.
+  class(*), intent(inout) :: attribute_value !< Attribute value
+  logical, intent(in), optional :: broadcast !< Flag controlling whether or
+                                             !! not the data will be
+                                             !! broadcasted to non
+                                             !! "I/O root" ranks.
+                                             !! The broadcast will be done
+                                             !! by default.
+  logical, intent(in), optional :: reproduce_null_char_bug_flag !< Flag indicating to reproduce the mpp_io bug where
+                                                                !! the null characters were not removed after reading
+                                                                !! a string attribute
+
+  integer :: varid
+  integer :: err
+  character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+  character(len=1024), dimension(1) :: charbuf !< 1D Character buffer
+  logical :: reproduce_null_char_bug !< Local flag indicating to reproduce the mpp_io bug where
+                                     !! the null characters were not removed after reading a string attribute
+
+  !! If the reproduce_null_char_bug flag is turned on fms2io will not remove the null character
+  reproduce_null_char_bug = .false.
+  if (present(reproduce_null_char_bug_flag)) reproduce_null_char_bug=reproduce_null_char_bug_flag
+
+  append_error_msg = "get_variable_attribute_0d: file:"//trim(fileobj%path)//"- variable:"//&
+                     &trim(variable_name)//" attribute: "//trim(attribute_name)
+
+  varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
+  select type(attribute_value)
+    type is (character(len=*))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), charbuf(1))
+      if (reproduce_null_char_bug) then
+         call string_copy(attribute_value, charbuf(1), check_for_null=.false.)
+      else
+         call string_copy(attribute_value, charbuf(1), check_for_null=.true.)
+      endif
+    type is (integer(kind=i4_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (integer(kind=i8_kind))
+      call error(trim(fileobj%path)// &
+                                      & ": 64 bit integers are not supported with PIO")
+      !if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
+      !                                   & ": 64 bit integers are only supported with 'netcdf4' file format"//&
+      !                                   &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
+      !                                   &"add nc_format='netcdf4' to your open_file call")
+      !err = nf90_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (real(kind=r4_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (real(kind=r8_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    class default
+      call error("unsupported attribute type: "//trim(append_error_msg))
+  end select
+  call check_netcdf_code(err, append_error_msg)
+end subroutine get_variable_attribute_0d_pio
+
 subroutine get_variable_attribute_0d(fileobj, variable_name, attribute_name, &
                                      attribute_value, broadcast, reproduce_null_char_bug_flag)
 
@@ -48,7 +108,11 @@ subroutine get_variable_attribute_0d(fileobj, variable_name, attribute_name, &
   logical :: reproduce_null_char_bug !< Local flag indicating to reproduce the mpp_io bug where
                                      !! the null characters were not removed after reading a string attribute
 
-  print *, "ERRORline", "51 get_variable_Attribute"; call error("PIO version not implemented!!!")
+  if (ncid_handled_by_pio(fileobj%ncid)) then
+    call get_variable_attribute_0d_pio(fileobj, variable_name, attribute_name, &
+                                     attribute_value, broadcast, reproduce_null_char_bug_flag)
+    return
+  endif
 
   !! If the reproduce_null_char_bug flag is turned on fms2io will not remove the null character
   reproduce_null_char_bug = .false.
@@ -112,6 +176,53 @@ end subroutine get_variable_attribute_0d
 
 
 !> @brief Get the value of a variable's attribute.
+subroutine get_variable_attribute_1d_pio(fileobj, variable_name, attribute_name, &
+                                     attribute_value, broadcast)
+
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  character(len=*), intent(in) :: variable_name !< Variable name.
+  character(len=*), intent(in) :: attribute_name !< Attribute name.
+  class(*), dimension(:), intent(inout) :: attribute_value !< Attribute value
+  logical, intent(in), optional :: broadcast !< Flag controlling whether or
+                                             !! not the data will be
+                                             !! broadcasted to non
+                                             !! "I/O root" ranks.
+                                             !! The broadcast will be done
+                                             !! by default.
+
+  integer :: varid
+  integer :: err
+  character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+
+  append_error_msg = "get_variable_attribute_1d: file:"//trim(fileobj%path)//"- variable:"//&
+                     &trim(variable_name)//" attribute: "//trim(attribute_name)
+
+  varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
+  select type(attribute_value)
+    type is (integer(kind=i4_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (integer(kind=i8_kind))
+      call error(trim(fileobj%path)// &
+                                      & ": 64 bit integers are not supported with PIO")
+
+      !if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
+      !                                        &": 64 bit integers are only supported with 'netcdf4' file format"//&
+      !                                        &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
+      !                                        &"add nc_format='netcdf4' to your open_file call")
+      !err = nf90_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (real(kind=r4_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    type is (real(kind=r8_kind))
+      err = pio_get_att(fileobj%ncid, varid, trim(attribute_name), attribute_value)
+    class default
+      call error("unsupported attribute type: "//trim(append_error_msg))
+  end select
+  call check_netcdf_code(err, append_error_msg)
+end subroutine get_variable_attribute_1d_pio
+!> @}
+
+
+!> @brief Get the value of a variable's attribute.
 subroutine get_variable_attribute_1d(fileobj, variable_name, attribute_name, &
                                      attribute_value, broadcast)
 
@@ -130,7 +241,11 @@ subroutine get_variable_attribute_1d(fileobj, variable_name, attribute_name, &
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  print *, "ERRORline", "133 get_variable_Attribute"; call error("PIO version not implemented!!!")
+  if (ncid_handled_by_pio(fileobj%ncid)) then
+    call get_variable_attribute_1d_pio(fileobj, variable_name, attribute_name, &
+                                     attribute_value, broadcast)
+    return
+  endif
 
   append_error_msg = "get_variable_attribute_1d: file:"//trim(fileobj%path)//"- variable:"//&
                      &trim(variable_name)//" attribute: "//trim(attribute_name)
