@@ -46,7 +46,7 @@ use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA
 use pio, only : pio_redef, pio_enddef, pio_global, pio_inq_dimid
 use pio, only : pio_seterrorhandling, pio_return_error, pio_def_dim
 use pio, only : pio_def_var, pio_inq_varid, pio_inquire_variable, pio_inquire_dimension
-use pio, only : pio_inq_att, pio_get_att
+use pio, only : pio_inq_att, pio_get_att, pio_put_var
 implicit none
 private
 
@@ -164,7 +164,7 @@ type, public :: FmsNetcdfFile_t
   character (len=20) :: time_name
   type(dimension_information) :: bc_dimensions !<information about the current dimensions for regional
                                                !! restart variables
-  type (File_desc_t) :: file_desc
+  type (File_desc_t), pointer :: file_desc => null()
 
 endtype FmsNetcdfFile_t
 
@@ -777,6 +777,11 @@ function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart
     call mpp_error(FATAL,'Cannot determine pio_netcdf_format')
   endif
 
+  if (associated(fileobj%file_desc)) then
+    call error("attempted to open a fileobj that has an allocated file_desc") 
+  endif
+  allocate(fileobj%file_desc)
+
   if (string_compare(mode, "read", .true.)) then
     err = pio_openfile(pio_iosystem, fileobj%file_desc, pio_iotype, fileobj%path, pio_nowrite)
   else if (string_compare(mode, "append", .true.)) then
@@ -991,6 +996,7 @@ subroutine netcdf_file_close_pio(fileobj)
   print *, "pio-dbg - closing file", trim(fileobj%path), fileobj%is_open
 
   call PIO_closefile(fileobj%file_desc)
+  deallocate(fileobj%file_desc)
 
   if (allocated(fileobj%is_open)) fileobj%is_open = .false.
   fileobj%path = missing_path
@@ -1024,7 +1030,7 @@ subroutine netcdf_file_close(fileobj)
   integer :: i
 
   print *, "pio-dbg --  attempting to close", trim(fileobj%path)
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     call netcdf_file_close_pio(fileobj)
     return
   endif 
@@ -1076,7 +1082,7 @@ function get_compressed_dimension_index(fileobj, dim_name) &
   do i = 1, fileobj%num_compressed_dims
     if (string_compare(fileobj%compressed_dims(i)%dimname, dim_name)) then
       dindex = i
-      if (.not. fileobj%is_readonly) then
+      if (ncid_handled_by_pio(fileobj%ncid)) then
         print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
       endif
       return
@@ -1469,7 +1475,7 @@ subroutine netcdf_restore_state(fileobj, unlim_dim_level)
 
   integer :: i
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1524,7 +1530,7 @@ function global_att_exists(fileobj, attribute_name, broadcast) &
                                              !! by default.
   logical :: att_exists
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1560,7 +1566,7 @@ function variable_att_exists(fileobj, variable_name, attribute_name, &
 
   integer :: varid
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1598,7 +1604,7 @@ function get_num_dimensions(fileobj, broadcast) &
 
   integer :: err
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1632,7 +1638,7 @@ subroutine get_dimension_names(fileobj, names, broadcast)
   integer :: i
   integer :: err
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1692,7 +1698,7 @@ function dimension_exists(fileobj, dimension_name, broadcast) &
 
   integer :: dimid
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
       dimid = get_dimension_id(fileobj%ncid, trim(dimension_name), &
                                msg="dimension_exists: file:"//trim(fileobj%path)//" dimension:"//trim(dimension_name), &
                                allow_failure=.true.)
@@ -1746,7 +1752,7 @@ function is_dimension_unlimited(fileobj, dimension_name, broadcast) &
   integer :: err
   integer :: ulim_dimid
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1783,7 +1789,7 @@ subroutine get_unlimited_dimension_name(fileobj, dimension_name, broadcast)
   integer :: dimid
   character(len=nf90_max_name), dimension(1) :: buffer
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1823,7 +1829,7 @@ subroutine get_dimension_size(fileobj, dimension_name, dim_size, broadcast)
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1858,7 +1864,7 @@ function get_num_variables(fileobj, broadcast) &
 
   integer :: err
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1892,7 +1898,7 @@ subroutine get_variable_names(fileobj, names, broadcast)
   integer :: i
   integer :: err
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -1975,7 +1981,7 @@ function variable_exists(fileobj, variable_name, broadcast) &
 
   integer :: varid
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     varid = variable_exists_pio(fileobj, variable_name, broadcast)
     var_exists = varid .ne. variable_missing
     return
@@ -2041,7 +2047,7 @@ function get_variable_num_dimensions(fileobj, variable_name, broadcast) &
   integer :: err
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     ndims = get_variable_num_dimensions_pio(fileobj, variable_name, broadcast)
     return
   endif
@@ -2132,7 +2138,7 @@ subroutine get_variable_dimension_names(fileobj, variable_name, dim_names, &
   integer :: i
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     call get_variable_dimension_names_pio(fileobj, variable_name, dim_names, broadcast) 
     return
   endif
@@ -2205,8 +2211,27 @@ subroutine get_variable_size(fileobj, variable_name, dim_sizes, broadcast)
   integer :: i
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  if (.not. fileobj%is_readonly) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  if (ncid_handled_by_pio(fileobj%ncid)) then
+    append_error_msg = "get_variable_size: file:"//trim(fileobj%path)//" variable:"//trim(variable_name)
+    varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
+    err = pio_inquire_variable(fileobj%ncid, varid, ndims=ndims, dimids=dimids)
+    call check_netcdf_code(err, append_error_msg)
+    if (ndims .gt. 0) then
+      if (size(dim_sizes) .ne. ndims) then
+        call error("'dim_sizes' has to be the same size of the number of dimensions for the variable."&
+                   &" Check your get_variable_size call for file "//trim(fileobj%path)//&
+                   &" and variable:"//trim(variable_name))
+      endif
+    else
+      call error("get_variable_size: the variable: "//trim(variable_name)//" in file: "//trim(fileobj%path)//&
+                &" does not any dimensions. ")
+    endif
+    do i = 1, ndims
+      err = pio_inquire_dimension(fileobj%ncid, dimids(i), len=dim_sizes(i))
+      call check_netcdf_code(err, append_error_msg)
+    enddo
+
+    return  
   endif
 
   if (fileobj%is_root) then
@@ -2272,8 +2297,20 @@ function get_variable_unlimited_dimension_index(fileobj, variable_name, &
   character(len=nf90_max_name), dimension(:), allocatable :: dim_names
   integer :: i
 
-  if (.not. fileobj%is_readonly) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  if (ncid_handled_by_pio(fileobj%ncid)) then
+    unlim_dim_index = no_unlimited_dimension
+    ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
+    allocate(dim_names(ndims))
+    call get_variable_dimension_names(fileobj, variable_name, dim_names, &
+                                      broadcast=.false.)
+    do i = 1, size(dim_names)
+      if (is_dimension_unlimited(fileobj, dim_names(i), .false.)) then
+        unlim_dim_index = i
+        exit
+      endif
+    enddo
+    deallocate(dim_names)
+    return
   endif
 
   unlim_dim_index = no_unlimited_dimension
@@ -2316,7 +2353,7 @@ function get_valid(fileobj, variable_name) &
   integer :: xtype
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
@@ -2800,7 +2837,7 @@ subroutine read_restart_bc(fileobj, unlim_dim_level, ignore_checksum)
 
   integer :: i !< No description
 
-  if (.not. fileobj%is_readonly) then
+  if (ncid_handled_by_pio(fileobj%ncid)) then
     print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
   endif
 
