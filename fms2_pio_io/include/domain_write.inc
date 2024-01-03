@@ -40,6 +40,8 @@ subroutine domain_write_0d(fileobj, variable_name, vdata, unlim_dim_level, corne
                                           !! where the data
                                           !! will be written to.
 
+  print *, "ERRORline domain_write_0d"; call error("PIO version not implemented!!!")
+
   call compressed_write(fileobj, variable_name, vdata, &
                           unlim_dim_level=unlim_dim_level, corner=corner)
 
@@ -68,6 +70,8 @@ subroutine domain_write_1d(fileobj, variable_name, vdata, unlim_dim_level, &
                                                               !! elements that
                                                               !! will be written
                                                               !! in each dimension.
+
+  print *, "ERRORline domain_write_1d"; call error("PIO version not implemented!!!")
 
   call compressed_write(fileobj, variable_name, vdata, &
                           unlim_dim_level=unlim_dim_level, corner=corner, &
@@ -136,6 +140,8 @@ subroutine domain_write_2d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
+
+  print *, "ERRORline domain_write_2d"; call error("PIO version not implemented!!!")
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then
@@ -432,6 +438,8 @@ subroutine domain_write_3d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
+
+  print *, "ERRORline domain_write_3d"; call error("PIO version not implemented!!!")
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then
@@ -736,6 +744,9 @@ subroutine domain_write_4d(fileobj, variable_name, vdata, unlim_dim_level, &
                           edge_lengths=edge_lengths)
     return
   endif
+
+  print *, "ERRORline domain_write_4d"; call error("PIO version not implemented!!!")
+
   io_domain => mpp_get_io_domain(fileobj%domain)
   call domain_offsets(size(vdata, xdim_index), size(vdata, ydim_index), fileobj%domain, &
                       xpos, ypos, isd, isc, xc_size, jsd, jsc, yc_size, &
@@ -1024,6 +1035,8 @@ subroutine domain_write_5d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
+
+  print *, "ERRORline domain_write_5d"; call error("PIO version not implemented!!!")
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then

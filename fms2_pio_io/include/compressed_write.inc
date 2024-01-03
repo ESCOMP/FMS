@@ -121,6 +121,8 @@ subroutine compressed_write_1d(fileobj, variable_name, cdata, unlim_dim_level, &
     return
   endif
 
+  print *, "ERRORline compressed_write_1d"; call error("PIO version not implemented!!!")
+
   e(:) = shape(cdata)
   !The root pe creates a buffer big enough to store the data:
   if (fileobj%is_root) then
@@ -226,6 +228,8 @@ subroutine compressed_write_2d(fileobj, variable_name, cdata, unlim_dim_level, &
                            edge_lengths=edge_lengths)
     return
   endif
+
+  print *, "ERRORline compressed_write_2d"; call error("PIO version not implemented!!!")
 
   e(:) = shape(cdata)
   !The root pe creates a buffer big enough to store the data:
@@ -351,6 +355,8 @@ subroutine compressed_write_3d(fileobj, variable_name, cdata, unlim_dim_level, &
     call compressed_write_4d(fileobj, variable_name, cdata_dummy, unlim_dim_level)
   endif
 
+  print *, "ERRORline compressed_write_3d"; call error("PIO version not implemented!!!")
+
   e(:) = shape(cdata)
   !The root pe creates a buffer big enough to store the data:
   if (fileobj%is_root) then
@@ -465,6 +471,8 @@ subroutine compressed_write_4d(fileobj, variable_name, cdata, unlim_dim_level, &
     return
   endif
 
+  print *, "ERRORline compressed_write_4d"; call error("PIO version not implemented!!!")
+
   !Gather the data onto the I/O root and write it out.
   if (fileobj%is_root) then
     c(:) = 1
@@ -572,6 +580,8 @@ subroutine compressed_write_5d(fileobj, variable_name, cdata, unlim_dim_level, &
                            edge_lengths=edge_lengths)
     return
   endif
+
+  print *, "ERRORline compressed_write_5d"; call error("PIO version not implemented!!!")
 
   !Gather the data onto the I/O root and write it out.
   if (fileobj%is_root) then

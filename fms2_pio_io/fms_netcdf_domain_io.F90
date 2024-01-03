@@ -203,7 +203,8 @@ function get_domain_decomposed_dimension_index(fileobj, variable_name, &
   integer :: i
 
   index_ = no_domain_decomposed_dimension
-  if (fileobj%is_root) then
+  if (fileobj%is_root &
+      .or. ncid_handled_by_pio(fileobj%ncid)) then
     ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
     allocate(dim_names(ndims))
     dim_names(:) = ""
@@ -225,6 +226,7 @@ function get_domain_decomposed_dimension_index(fileobj, variable_name, &
     enddo
     deallocate(dim_names)
   endif
+  if (ncid_handled_by_pio(fileobj%ncid)) return
   if (present(broadcast)) then
     if (.not. broadcast) then
       return

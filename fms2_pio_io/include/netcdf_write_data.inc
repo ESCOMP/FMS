@@ -47,11 +47,9 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
   integer :: i
   integer :: tlen
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
-
-  print *, "ERRORline", 51, "write_data.inc"; call error("PIO version not implemented!!!")
-
+  
   append_error_msg = "netcdf_write_data_0d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
-  if (fileobj%is_root) then
+  !if (fileobj%is_root) then !--- pio write routines are to be called by all PEs and not just root PE. 
     c(:) = 1
     if (present(corner)) then
       c(1) = corner
@@ -68,14 +66,15 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
     varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
     select type(variable_data)
       type is (integer(kind=i4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data)
       type is (integer(kind=i8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c)
+        call error(trim(fileobj%path)//": 64 bit integers are not supported with PIO.")
       type is (real(kind=r4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data)
       type is (real(kind=r8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data)
       type is (character(len=*))
+        call error(trim(fileobj%path)//": character write not implemented yet (netcdf_write_data.inc)")
         ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
         if (ndims .ne. 1) then
           call error("currently only scalar and 1d character writes are supported: "//trim(append_error_msg))
@@ -101,7 +100,8 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
         call error("Unsupported variable type: "//trim(append_error_msg))
     end select
     call check_netcdf_code(err, append_error_msg)
-  endif
+  !endif
+  print*, "dbg-wrote0d ", trim(variable_name)
 end subroutine netcdf_write_data_0d
 
 
@@ -137,11 +137,9 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
   integer :: tlen
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
 
-  print *, "ERRORline", 140, "write_data.inc"; call error("PIO version not implemented!!!")
-
   append_error_msg = "netcdf_write_data_1d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
-  if (fileobj%is_root) then
+  !if (fileobj%is_root) then !--- pio write routines are to be called by all PEs and not just root PE. 
     c(:) = 1
     if (present(corner)) then
       c(1:1) = corner(:)
@@ -164,14 +162,15 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
     varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
     select type(variable_data)
       type is (integer(kind=i4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
       type is (integer(kind=i8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
+        call error(trim(fileobj%path)//": 64 bit integers are not supported with PIO.")
       type is (real(kind=r4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
       type is (real(kind=r8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
+        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
       type is (character(len=*))
+        call error(trim(fileobj%path)//": character write not implemented yet (netcdf_write_data.inc)")
         ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
         if (ndims .ne. 2) then
           call error("currently only scalar and 1d character writes are supported: "//trim(append_error_msg))
@@ -203,7 +202,7 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
         call error("Unsupported variable type: "//trim(append_error_msg))
     end select
     call check_netcdf_code(err, append_error_msg)
-  endif
+  !endif
 end subroutine netcdf_write_data_1d
 
 

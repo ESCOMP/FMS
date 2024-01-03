@@ -256,6 +256,7 @@ public :: set_fileobj_time_name
 public :: write_restart_bc
 public :: read_restart_bc
 public :: flush_file
+public :: ncid_handled_by_pio
 
 !> @ingroup netcdf_io_mod
 interface netcdf_add_restart_variable
@@ -420,7 +421,7 @@ subroutine fms2_pio_init ()
   pio_numiotasks = 1
   pio_rearranger = 1 
   pio_root = 1
-  pio_stride = 32
+  pio_stride = 2
   pio_optbase = 1
   pio_log_level = 1
 
@@ -762,6 +763,21 @@ function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart
 
   !Store properties in the derived type.
   call string_copy(fileobj%path, trim(buf2))
+  if (present(pelist)) then
+    if (size(pelist) /= mpp_npes()) then
+      call mpp_error(FATAL,'All processors must be assigned as FMS IO pes when PIO is active.'//&
+                           '(Note that the list of FMS IO PEs is different than PIO IO PEs '//&
+                           'which may be a subset of active processors.).')
+    endif
+    allocate(fileobj%pelist(size(pelist)))
+    fileobj%pelist(:) = pelist(:)
+  else
+    allocate(fileobj%pelist(1))
+    fileobj%pelist(1) = mpp_pe()
+  endif
+  fileobj%io_root = fileobj%pelist(1)
+  fileobj%is_root = mpp_pe() .eq. fileobj%io_root ! TODO: REMOVE all occurences of is_root (and io_root) 
+
   ! if passed, ignore pelist and do not store:
   ! - pelist, io_root, is_root
   fileobj%is_netcdf4 = .false.
@@ -1219,10 +1235,6 @@ subroutine netcdf_add_dimension(fileobj, dimension_name, dimension_length, &
     endif
   endif
 
-  if (trim(dimension_name) == "lath") then
-    print *, "dbglath"
-  endif
-
   call set_netcdf_mode(fileobj%ncid, define_mode)
   err = pio_def_dim(fileobj%ncid, trim(dimension_name), dim_len, dimid)
   call check_netcdf_code(err, "Netcdf_add_dimension: file:"//trim(fileobj%path)//" dimension name:"// &
@@ -1567,7 +1579,14 @@ function variable_att_exists(fileobj, variable_name, attribute_name, &
   integer :: varid
 
   if (ncid_handled_by_pio(fileobj%ncid)) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+    att_exists = .false.
+    varid = get_variable_id(fileobj%ncid, trim(variable_name), &
+            & msg="variable_att_exists: file:"//trim(fileobj%path)//"- variable:"//&
+            &trim(variable_name))
+    att_exists = attribute_exists(fileobj%ncid, varid, trim(attribute_name), &
+                 &msg="variable_att_exists: file:"//trim(fileobj%path)//" variable:"//trim(variable_name)//&
+                 &" attribute name:"//trim(attribute_name))
+    return
   endif
 
   att_exists = .false.
@@ -1605,7 +1624,9 @@ function get_num_dimensions(fileobj, broadcast) &
   integer :: err
 
   if (ncid_handled_by_pio(fileobj%ncid)) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+    err = pio_inquire(fileobj%ncid, nDimensions=ndims)
+    call check_netcdf_code(err, "get_num_dimensions: file:"//trim(fileobj%path))
+    return
   endif
 
   if (fileobj%is_root) then
@@ -1639,7 +1660,22 @@ subroutine get_dimension_names(fileobj, names, broadcast)
   integer :: err
 
   if (ncid_handled_by_pio(fileobj%ncid)) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+    ndims = get_num_dimensions(fileobj)
+    if (ndims .gt. 0) then
+      if (size(names) .ne. ndims) then
+        call error("'names' has to be the same size of the number of dimensions."&
+                   &" Check your get_dimension_names call for file "//trim(fileobj%path))
+      endif
+    else
+      call error("get_dimension_names: the file "//trim(fileobj%path)//" does not have any dimensions")
+    endif
+    names(:) = ""
+    do i = 1, ndims
+      err = pio_inquire_dimension(fileobj%ncid, i, name=names(i))
+      call check_netcdf_code(err, "get_dimension_names: file:"//trim(fileobj%path))
+    enddo
+
+    return
   endif
 
 
@@ -1753,7 +1789,14 @@ function is_dimension_unlimited(fileobj, dimension_name, broadcast) &
   integer :: ulim_dimid
 
   if (ncid_handled_by_pio(fileobj%ncid)) then
-    print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+    append_error_msg="is_dimension_unlimited: file:"//trim(fileobj%path)//&
+                   & " dimension_name:"//trim(dimension_name)
+    dimid = get_dimension_id(fileobj%ncid, trim(dimension_name), msg=append_error_msg)
+    err = pio_inquire(fileobj%ncid, unlimitedDimId=ulim_dimid)
+    call check_netcdf_code(err, append_error_msg)
+    is_unlimited = dimid .eq. ulim_dimid
+
+    return
   endif
 
   if (fileobj%is_root) then
@@ -1942,30 +1985,6 @@ end subroutine get_variable_names
 
 !> @brief Determine if a variable exists.
 !! @return Flag telling if the variable exists.
-function variable_exists_pio(fileobj, variable_name, broadcast) &
-  result(var_exists)
-
-  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
-  character(len=*), intent(in) :: variable_name !< Variable name.
-  logical, intent(in), optional :: broadcast !< Flag controlling whether or
-                                             !! not the data will be
-                                             !! broadcasted to non
-                                             !! "I/O root" ranks.
-                                             !! The broadcast will be done
-                                             !! by default.
-  logical :: var_exists
-
-  integer :: varid
-
-  varid = get_variable_id(fileobj%ncid, trim(variable_name), &
-                          msg="variable_exists: file:"//trim(fileobj%path)//" variable:"//trim(variable_name), &
-                          allow_failure=.true.)
-  var_exists = varid .ne. variable_missing
-end function variable_exists_pio
-
-
-!> @brief Determine if a variable exists.
-!! @return Flag telling if the variable exists.
 function variable_exists(fileobj, variable_name, broadcast) &
   result(var_exists)
 
@@ -1982,7 +2001,9 @@ function variable_exists(fileobj, variable_name, broadcast) &
   integer :: varid
 
   if (ncid_handled_by_pio(fileobj%ncid)) then
-    varid = variable_exists_pio(fileobj, variable_name, broadcast)
+    varid = get_variable_id(fileobj%ncid, trim(variable_name), &
+                          msg="variable_exists: file:"//trim(fileobj%path)//" variable:"//trim(variable_name), &
+                          allow_failure=.true.)
     var_exists = varid .ne. variable_missing
     return
   endif
