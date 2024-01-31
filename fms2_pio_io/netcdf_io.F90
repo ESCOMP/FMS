@@ -34,7 +34,7 @@ use fms_io_utils_mod
 use platform_mod
 use mpp_mod, only: mpp_pe, mpp_npes, get_mpp_comm, mpp_root_pe, stdout
 
-use pio, only : PIO_init, pio_createfile, PIO_initdecomp
+use pio, only : PIO_init, pio_createfile, PIO_initdecomp, PIO_syncfile
 use pio, only : pio_createfile, pio_openfile, pio_file_is_open, PIO_closefile
 use pio, only : File_desc_t, var_desc_t, iosystem_desc_t, IO_desc_t
 use pio, only : pio_write, pio_clobber, pio_noclobber, pio_nowrite
@@ -42,7 +42,7 @@ use pio, only : PIO_put_att, pio_inquire, PIO_get_local_array_size
 use pio, only : pio_iotype_netcdf, pio_iotype_pnetcdf
 use pio, only : PIO_set_log_level
 use pio, only : PIO_DOUBLE, PIO_REAL, PIO_INT, PIO_CHAR
-use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA
+use pio, only : PIO_64BIT_OFFSET, PIO_64BIT_DATA, PIO_NOERR
 use pio, only : pio_redef, pio_enddef, pio_global, pio_inq_dimid
 use pio, only : pio_seterrorhandling, pio_return_error, pio_def_dim
 use pio, only : pio_def_var, pio_inq_varid, pio_inquire_variable, pio_inquire_dimension
@@ -246,6 +246,7 @@ public :: compressed_start_and_count
 public :: get_fill_value
 public :: get_variable_sense
 public :: get_variable_missing
+public :: get_variable_id
 public :: get_variable_units
 public :: get_time_calendar
 public :: is_registered_to_restart
@@ -357,10 +358,10 @@ character(len=64)   :: pio_netcdf_format, pio_typename
 integer             :: pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_log_level
 integer             :: pio_optbase  ! Start index of I/O processors
 namelist / fms2_pio_nml / &
-                      pio_netcdf_format, pio_numiotasks, pio_rearranger, pio_root, pio_stride, pio_typename,&
-                      pio_log_level, pio_optbase
+                      pio_netcdf_format, pio_numiotasks, pio_rearranger, pio_root, pio_stride, &
+                      pio_typename, pio_optbase, pio_log_level
 
-type(iosystem_desc_t) :: pio_iosystem     ! The ParallelIO system set up by PIO_init
+type(iosystem_desc_t), public :: pio_iosystem     ! The ParallelIO system set up by PIO_init
 integer               :: pio_iotype       ! PIO_IOTYPE_NETCDF or PNETCDF
 
 integer, dimension(200) :: pio_ncids ! todo - remove
@@ -415,17 +416,38 @@ subroutine fms2_pio_init ()
   integer :: numAggregator = 0 !TODO
   integer :: ierr
 
+  pe = mpp_pe()
+  npes = mpp_npes()
+  localcomm = get_mpp_comm()
+
   ! default values for pio_nml namelist vars:
   pio_netcdf_format = "64bit_offset"
   pio_typename = "netcdf"
   pio_numiotasks = 1
   pio_rearranger = 1 
   pio_root = 1
-  pio_stride = 2
+  pio_stride = 128
   pio_optbase = 1
-  pio_log_level = 1
+  pio_log_level = 0
 
   READ (input_nml_file, NML=fms2_pio_nml, IOSTAT=mystat)
+  if (mystat /= 0) then
+    call error("Unable to read fms2_pio_nml from input.nml")
+  endif
+
+  if (pe == mpp_root_pe()) then
+    write(stdout(),*) "--- fms2_pio_init namelist ---"
+    write(stdout(),*) "  pio_netcdf_format: ", trim(pio_netcdf_format)
+    write(stdout(),*) "  pio_typename: ", trim(pio_typename)
+    write(stdout(),*) "  pio_numiotasks: ", pio_numiotasks
+    write(stdout(),*) "  pio_rearranger: ", pio_rearranger
+    write(stdout(),*) "  pio_root: ", pio_root
+    write(stdout(),*) "  pio_stride: ", pio_stride
+    write(stdout(),*) "  pio_optbase: ", pio_optbase
+    write(stdout(),*) "  pio_log_level: ", pio_log_level
+  endif 
+
+  ! todo: here. add consistency checks for npes, numiotasks, stride, etc.
 
   select case(trim(pio_typename))
   case ("netcdf")
@@ -435,24 +457,6 @@ subroutine fms2_pio_init ()
   case default
     call mpp_error(FATAL,'Unknown PIO filetype')
   end select
-
-  pe = mpp_pe()
-  npes = mpp_npes()
-  localcomm = get_mpp_comm()
-
-  if (pe==mpp_root_pe()) then
-    write(stdout(),*) "fms2_pio_init namelist ---",&
-      ' pio_netcdf_format: ', trim(pio_netcdf_format), &
-      ' pio_typename: ', trim(pio_typename), &
-      ' pio_numiotasks: ', pio_numiotasks, &
-      ' pio_rearranger: ', pio_rearranger, &
-      ' pio_root: ', pio_root, &
-      ' pio_stride: ', pio_stride, &
-      ' pio_optbase: ', pio_optbase, &
-      ' pio_log_level: ', pio_log_level
-  endif 
-
-  ! todo: here. add consistency checks for npes, numiotasks, stride, etc.
 
   !initialize PIO
   call PIO_init(    &
@@ -465,7 +469,10 @@ subroutine fms2_pio_init ()
     pio_iosystem,   & ! The ParallelIO system set up by PIO_init
     pio_optbase )     ! Start index of I/O processors (optional)
 
-  !todo ierr = PIO_set_log_level(pio_log_level)
+  ierr = PIO_set_log_level(pio_log_level)
+  if(ierr /= PIO_NOERR) then
+      call error('Error setting PIO logging level')
+  end if
 
   if (pe==mpp_root_pe()) write(stdout(),*) "PIO initialized by FMS2 io module."
   pio_initialized = .true.
@@ -830,7 +837,6 @@ function netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart
   ! Set the is_open flag to true for this file object.
   if (.not.allocated(fileobj%is_open)) allocate(fileobj%is_open)
   fileobj%is_open = .true.
-  print *, "pio-dbg -- opened: ", path
 
   fileobj%bc_dimensions%xlen = 0
   fileobj%bc_dimensions%ylen = 0
@@ -878,7 +884,7 @@ function netcdf_file_open(fileobj, path, mode, nc_format, pelist, is_restart, do
   logical :: is_res
   logical :: dont_add_res !< flag indicated to not add ".res" to the filename
 
-  print *, "pio-dbg --  attempting to open", trim(path), mode
+  !print *, "pio-dbg --  attempting to open", trim(path), mode
   if (.not. string_compare(mode, "read", .true.)) then
     success = netcdf_file_open_pio(fileobj, path, mode, nc_format, pelist, is_restart, dont_add_res_to_filename)
     return
@@ -1009,14 +1015,17 @@ subroutine netcdf_file_close_pio(fileobj)
   integer :: err
   integer :: i
 
-  print *, "pio-dbg - closing file", trim(fileobj%path), fileobj%is_open
-
   call PIO_closefile(fileobj%file_desc)
   deallocate(fileobj%file_desc)
 
   if (allocated(fileobj%is_open)) fileobj%is_open = .false.
   fileobj%path = missing_path
   fileobj%ncid = missing_ncid
+  if (allocated(fileobj%pelist)) then
+    deallocate(fileobj%pelist)
+  endif
+  fileobj%io_root = missing_rank
+  fileobj%is_root = .false.
   if (allocated(fileobj%restart_vars)) then
     deallocate(fileobj%restart_vars)
   endif
@@ -1033,7 +1042,6 @@ subroutine netcdf_file_close_pio(fileobj)
   if (allocated(fileobj%compressed_dims)) then
     deallocate(fileobj%compressed_dims)
   endif
-  print *, "pio-dbg -- closed: ", trim(fileobj%path), allocated(fileobj%is_open), fileobj%is_open
 end subroutine netcdf_file_close_pio
 
 
@@ -1045,7 +1053,7 @@ subroutine netcdf_file_close(fileobj)
   integer :: err
   integer :: i
 
-  print *, "pio-dbg --  attempting to close", trim(fileobj%path)
+  !print *, "pio-dbg --  attempting to close", trim(fileobj%path)
   if (ncid_handled_by_pio(fileobj%ncid)) then
     call netcdf_file_close_pio(fileobj)
     return
@@ -1299,8 +1307,7 @@ subroutine netcdf_add_variable(fileobj, variable_name, variable_type, dimensions
   if (string_compare(variable_type, "int", .true.)) then
     vtype = pio_int
   elseif (string_compare(variable_type, "int64", .true.)) then
-    if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)// &
-                                             & ": 64 bit integers are not supported with PIO")
+    call error(trim(fileobj%path)//": 64 bit integers are not supported with PIO")
     !if ( .not. fileobj%is_netcdf4) call error(trim(fileobj%path)//&
     !                                         &": 64 bit integers are only supported with 'netcdf4' file format"//&
     !                                         &". Set netcdf_default_format='netcdf4' in the fms2_io namelist OR "//&
@@ -2964,7 +2971,10 @@ subroutine flush_file(fileobj)
 
   integer :: err !< Netcdf error code
 
-  print *, "ERRORline", __LINE__, trim(__FILE__); call error("PIO version not implemented!!!")
+  if (ncid_handled_by_pio(fileobj%ncid)) then
+    call PIO_syncfile(fileobj%file_desc)
+    return
+  endif
 
   if (fileobj%is_root) then
     err = nf90_sync(fileobj%ncid)

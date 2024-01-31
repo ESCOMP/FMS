@@ -140,8 +140,11 @@ subroutine domain_write_2d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
-
-  print *, "ERRORline domain_write_2d"; call error("PIO version not implemented!!!")
+  integer :: basetype_nf
+  type(PIO_decomp), pointer :: decomp
+  integer :: varid
+  type(var_desc_t) :: vardesc
+  integer :: err
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then
@@ -150,231 +153,53 @@ subroutine domain_write_2d(fileobj, variable_name, vdata, unlim_dim_level, &
                           edge_lengths=edge_lengths)
     return
   endif
-  io_domain => mpp_get_io_domain(fileobj%domain)
-  call domain_offsets(size(vdata, xdim_index), size(vdata, ydim_index), fileobj%domain, &
-                      xpos, ypos, isd, isc, xc_size, jsd, jsc, yc_size, &
-                      buffer_includes_halos, msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
-  c(:) = 1
-  e(:) = shape(vdata)
 
-  !I/O root gathers the data and writes it.
-  if (fileobj%is_root) then
-    allocate(pe_isc(size(fileobj%pelist)))
-    allocate(pe_iec(size(fileobj%pelist)))
-    allocate(pe_icsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, xbegin=pe_isc, xend=pe_iec, xsize=pe_icsize, &
-                                 position=xpos)
-    allocate(pe_jsc(size(fileobj%pelist)))
-    allocate(pe_jec(size(fileobj%pelist)))
-    allocate(pe_jcsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, ybegin=pe_jsc, yend=pe_jec, ysize=pe_jcsize, &
-                                 position=ypos)
-
-    !< Determine the size of the global io domain
-    call mpp_get_global_domain(io_domain, ybegin=ygmin, yend=ygmax, position=ypos)
-    call mpp_get_global_domain(io_domain, xbegin=xgmin, xend=xgmax, position=xpos)
-
-    !Write the out the data.
-    !< Set e to equal the size of the global io domain
-    e(xdim_index) = xgmax - xgmin + 1
-    e(ydim_index) = ygmax - ygmin + 1
-
-    !< Allocate a global buffer, get the fill value if it exists in the file, and initialize
-    !! the buffer to the fill value
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(global_buf_i4_kind, e)
-        global_buf_i4_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
-            global_buf_i4_kind = fill_i4_kind
-        endif
-      type is (integer(kind=i8_kind))
-        call allocate_array(global_buf_i8_kind, e)
-        global_buf_i8_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i8_kind, broadcast=.false.)) then
-            global_buf_i8_kind = fill_i8_kind
-        endif
-      type is (real(kind=r4_kind))
-        call allocate_array(global_buf_r4_kind, e)
-        global_buf_r4_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
-            global_buf_r4_kind = fill_r4_kind
-        endif
-      type is (real(kind=r8_kind))
-        call allocate_array(global_buf_r8_kind, e)
-        global_buf_r8_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
-            global_buf_r8_kind = fill_r8_kind
-        endif
-      class default
-      call error("unsupported variable type: domain_write_2d: file: "//trim(fileobj%path)//" variable:"// &
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      basetype_nf = PIO_INT
+    type is (real(kind=r4_kind))
+      basetype_nf = PIO_REAL
+    type is (real(kind=r8_kind))
+      basetype_nf = PIO_DOUBLE
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
                & trim(variable_name))
-    end select
+  end select
 
-    do i = 1, size(fileobj%pelist)
-      !< Set c relative to the starting global io domain index
-      c(xdim_index) = pe_isc(i) - xgmin + 1
-      c(ydim_index) = pe_jsc(i) - ygmin + 1
-      e(xdim_index) = pe_icsize(i)
-      e(ydim_index) = pe_jcsize(i)
-      select type(vdata)
-        type is (integer(kind=i4_kind))
-          call allocate_array(buf_i4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i4_kind, size(buf_i4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i4_kind, global_buf_i4_kind, c, e)
-          deallocate(buf_i4_kind)
-        type is (integer(kind=i8_kind))
-          call allocate_array(buf_i8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i8_kind, size(buf_i8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i8_kind, global_buf_i8_kind, c, e)
-          deallocate(buf_i8_kind)
-        type is (real(kind=r4_kind))
-          call allocate_array(buf_r4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r4_kind, size(buf_r4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r4_kind, global_buf_r4_kind, c, e)
-          deallocate(buf_r4_kind)
-        type is (real(kind=r8_kind))
-          call allocate_array(buf_r8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r8_kind, size(buf_r8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r8_kind, global_buf_r8_kind, c, e)
-          deallocate(buf_r8_kind)
-      end select
-    enddo
-    deallocate(pe_isc)
-    deallocate(pe_iec)
-    deallocate(pe_icsize)
-    deallocate(pe_jsc)
-    deallocate(pe_jec)
-    deallocate(pe_jcsize)
+  ! get varid and construct a temporary vardesc to pass to PIO routines
+  varid = get_variable_id(fileobj%ncid, trim(variable_name), &
+              msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
+  vardesc%varID = varid
+  vardesc%ncid = fileobj%ncid
 
-    !Write the out the data.
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r8_kind)
-    end select
-  else
-    if (buffer_includes_halos) then
-      c(xdim_index) = isc - isd + 1
-      c(ydim_index) = jsc - jsd + 1
-    endif
-    e(xdim_index) = xc_size
-    e(ydim_index) = yc_size
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(buf_i4_kind, e)
-        call get_array_section(buf_i4_kind, vdata, c, e)
-        call mpp_send(buf_i4_kind, size(buf_i4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call allocate_array(buf_i8_kind, e)
-        call get_array_section(buf_i8_kind, vdata, c, e)
-        call mpp_send(buf_i8_kind, size(buf_i8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call allocate_array(buf_r4_kind, e)
-        call get_array_section(buf_r4_kind, vdata, c, e)
-        call mpp_send(buf_r4_kind, size(buf_r4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call allocate_array(buf_r8_kind, e)
-        call get_array_section(buf_r8_kind, vdata, c, e)
-        call mpp_send(buf_r8_kind, size(buf_r8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r8_kind)
-      class default
-        call error("unsupported variable type: domain_write_2d: file: "//trim(fileobj%path)//" variable:"// &
-                 & trim(variable_name))
-    end select
-  endif
+  decomp => get_decomp(fileobj, variable_name, vardesc, shape(vdata), basetype_nf, 2, xdim_index, ydim_index, unlim_dim_level)
+
+  err = 0
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_i4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r8_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r8_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
+               & trim(variable_name))
+  end select
+  call check_netcdf_code(err, "domain_write.inc")
+
 end subroutine domain_write_2d
 
 
@@ -438,8 +263,11 @@ subroutine domain_write_3d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
-
-  print *, "ERRORline domain_write_3d"; call error("PIO version not implemented!!!")
+  integer :: basetype_nf
+  integer :: varid
+  integer :: err
+  type(var_desc_t) :: vardesc
+  type(PIO_decomp), pointer :: decomp
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then
@@ -448,231 +276,53 @@ subroutine domain_write_3d(fileobj, variable_name, vdata, unlim_dim_level, &
                           edge_lengths=edge_lengths)
     return
   endif
-  io_domain => mpp_get_io_domain(fileobj%domain)
-  call domain_offsets(size(vdata, xdim_index), size(vdata, ydim_index), fileobj%domain, &
-                      xpos, ypos, isd, isc, xc_size, jsd, jsc, yc_size, &
-                      buffer_includes_halos, msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
-  c(:) = 1
-  e(:) = shape(vdata)
 
-  !I/O root gathers the data and writes it.
-  if (fileobj%is_root) then
-    allocate(pe_isc(size(fileobj%pelist)))
-    allocate(pe_iec(size(fileobj%pelist)))
-    allocate(pe_icsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, xbegin=pe_isc, xend=pe_iec, xsize=pe_icsize, &
-                                 position=xpos)
-    allocate(pe_jsc(size(fileobj%pelist)))
-    allocate(pe_jec(size(fileobj%pelist)))
-    allocate(pe_jcsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, ybegin=pe_jsc, yend=pe_jec, ysize=pe_jcsize, &
-                                 position=ypos)
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      basetype_nf = PIO_INT
+    type is (real(kind=r4_kind))
+      basetype_nf = PIO_REAL
+    type is (real(kind=r8_kind))
+      basetype_nf = PIO_DOUBLE
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
+               & trim(variable_name))
+  end select
 
-    !< Determine the size of the global io domain
-    call mpp_get_global_domain(io_domain, ybegin=ygmin, yend=ygmax, position=ypos)
-    call mpp_get_global_domain(io_domain, xbegin=xgmin, xend=xgmax, position=xpos)
+  ! get varid and construct a temporary vardesc to pass to PIO routines
+  varid = get_variable_id(fileobj%ncid, trim(variable_name), &
+              msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
+  vardesc%varID = varid
+  vardesc%ncid = fileobj%ncid
 
-    !Write the out the data.
-    !< Set e to equal the size of the global io domain
-    e(xdim_index) = xgmax - xgmin + 1
-    e(ydim_index) = ygmax - ygmin + 1
+  decomp => get_decomp(fileobj, variable_name, vardesc, shape(vdata), basetype_nf, 3, xdim_index, ydim_index, unlim_dim_level)
 
-    !< Allocate a global buffer, get the fill value if it exists in the file, and initialize
-    !! the buffer to the fill value
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(global_buf_i4_kind, e)
-        global_buf_i4_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
-            global_buf_i4_kind = fill_i4_kind
-        endif
-      type is (integer(kind=i8_kind))
-        call allocate_array(global_buf_i8_kind, e)
-        global_buf_i8_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i8_kind, broadcast=.false.)) then
-            global_buf_i8_kind = fill_i8_kind
-        endif
-      type is (real(kind=r4_kind))
-        call allocate_array(global_buf_r4_kind, e)
-        global_buf_r4_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
-            global_buf_r4_kind = fill_r4_kind
-        endif
-      type is (real(kind=r8_kind))
-        call allocate_array(global_buf_r8_kind, e)
-        global_buf_r8_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
-            global_buf_r8_kind = fill_r8_kind
-        endif
-      class default
-        call error("unsupported variable type: domain_write_3d: file: "//trim(fileobj%path)//" variable:"// &
-                 & trim(variable_name))
-    end select
+  err = 0
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_i4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r8_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r8_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
+               & trim(variable_name))
+  end select
+  call check_netcdf_code(err, "domain_write.inc")
 
-    do i = 1, size(fileobj%pelist)
-      !< Set c relative to the starting global io domain index
-      c(xdim_index) = pe_isc(i) - xgmin + 1
-      c(ydim_index) = pe_jsc(i) - ygmin + 1
-      e(xdim_index) = pe_icsize(i)
-      e(ydim_index) = pe_jcsize(i)
-      select type(vdata)
-        type is (integer(kind=i4_kind))
-          call allocate_array(buf_i4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i4_kind, size(buf_i4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i4_kind, global_buf_i4_kind, c, e)
-          deallocate(buf_i4_kind)
-        type is (integer(kind=i8_kind))
-          call allocate_array(buf_i8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i8_kind, size(buf_i8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i8_kind, global_buf_i8_kind, c, e)
-          deallocate(buf_i8_kind)
-        type is (real(kind=r4_kind))
-          call allocate_array(buf_r4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r4_kind, size(buf_r4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r4_kind, global_buf_r4_kind, c, e)
-          deallocate(buf_r4_kind)
-        type is (real(kind=r8_kind))
-          call allocate_array(buf_r8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r8_kind, size(buf_r8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r8_kind, global_buf_r8_kind, c, e)
-          deallocate(buf_r8_kind)
-      end select
-    enddo
-    deallocate(pe_isc)
-    deallocate(pe_iec)
-    deallocate(pe_icsize)
-    deallocate(pe_jsc)
-    deallocate(pe_jec)
-    deallocate(pe_jcsize)
-
-    !Write the out the data.
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r8_kind)
-    end select
-  else
-    if (buffer_includes_halos) then
-      c(xdim_index) = isc - isd + 1
-      c(ydim_index) = jsc - jsd + 1
-    endif
-    e(xdim_index) = xc_size
-    e(ydim_index) = yc_size
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(buf_i4_kind, e)
-        call get_array_section(buf_i4_kind, vdata, c, e)
-        call mpp_send(buf_i4_kind, size(buf_i4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call allocate_array(buf_i8_kind, e)
-        call get_array_section(buf_i8_kind, vdata, c, e)
-        call mpp_send(buf_i8_kind, size(buf_i8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call allocate_array(buf_r4_kind, e)
-        call get_array_section(buf_r4_kind, vdata, c, e)
-        call mpp_send(buf_r4_kind, size(buf_r4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call allocate_array(buf_r8_kind, e)
-        call get_array_section(buf_r8_kind, vdata, c, e)
-        call mpp_send(buf_r8_kind, size(buf_r8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r8_kind)
-      class default
-        call error("unsupported variable type: domain_write_3d: file: "//trim(fileobj%path)//" variable:"// &
-                 & trim(variable_name))
-    end select
-  endif
 end subroutine domain_write_3d
 
 
@@ -736,6 +386,13 @@ subroutine domain_write_4d(fileobj, variable_name, vdata, unlim_dim_level, &
   integer :: xgmin !< Starting x index of the global io domain
   integer :: ygmax !< Ending y index of the global io domain
   integer :: ygmin !< Ending y index of the global io domain
+  integer :: basetype_nf
+  integer :: varid
+  integer :: err
+  integer :: ndims
+  type(var_desc_t) :: vardesc
+  type(PIO_decomp), pointer :: decomp
+
 
   if (.not. is_variable_domain_decomposed(fileobj, variable_name, .true., &
                                           xdim_index, ydim_index, xpos, ypos)) then
@@ -745,233 +402,63 @@ subroutine domain_write_4d(fileobj, variable_name, vdata, unlim_dim_level, &
     return
   endif
 
-  print *, "ERRORline domain_write_4d"; call error("PIO version not implemented!!!")
+  varid = get_variable_id(fileobj%ncid, trim(variable_name), &
+              msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
 
-  io_domain => mpp_get_io_domain(fileobj%domain)
-  call domain_offsets(size(vdata, xdim_index), size(vdata, ydim_index), fileobj%domain, &
-                      xpos, ypos, isd, isc, xc_size, jsd, jsc, yc_size, &
-                      buffer_includes_halos, msg="file:"//trim(fileobj%path)//" and variable:"//trim(variable_name))
-  c(:) = 1
-  e(:) = shape(vdata)
-
-  !I/O root gathers the data and writes it.
-  if (fileobj%is_root) then
-    allocate(pe_isc(size(fileobj%pelist)))
-    allocate(pe_iec(size(fileobj%pelist)))
-    allocate(pe_icsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, xbegin=pe_isc, xend=pe_iec, xsize=pe_icsize, &
-                                 position=xpos)
-    allocate(pe_jsc(size(fileobj%pelist)))
-    allocate(pe_jec(size(fileobj%pelist)))
-    allocate(pe_jcsize(size(fileobj%pelist)))
-    call mpp_get_compute_domains(io_domain, ybegin=pe_jsc, yend=pe_jec, ysize=pe_jcsize, &
-                                 position=ypos)
-
-    !< Determine the size of the global io domain
-    call mpp_get_global_domain(io_domain, ybegin=ygmin, yend=ygmax, position=ypos)
-    call mpp_get_global_domain(io_domain, xbegin=xgmin, xend=xgmax, position=xpos)
-
-    !Write the out the data.
-    !< Set e to equal the size of the global io domain
-    e(xdim_index) = xgmax - xgmin + 1
-    e(ydim_index) = ygmax - ygmin + 1
-
-    !< Allocate a global buffer, get the fill value if it exists in the file, and initialize
-    !! the buffer to the fill value
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(global_buf_i4_kind, e)
-        global_buf_i4_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
-            global_buf_i4_kind = fill_i4_kind
-        endif
-      type is (integer(kind=i8_kind))
-        call allocate_array(global_buf_i8_kind, e)
-        global_buf_i8_kind = 0
-        if (get_fill_value(fileobj, variable_name, fill_i8_kind, broadcast=.false.)) then
-            global_buf_i8_kind = fill_i8_kind
-        endif
-      type is (real(kind=r4_kind))
-        call allocate_array(global_buf_r4_kind, e)
-        global_buf_r4_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
-            global_buf_r4_kind = fill_r4_kind
-        endif
-      type is (real(kind=r8_kind))
-        call allocate_array(global_buf_r8_kind, e)
-        global_buf_r8_kind = 0.
-        if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
-            global_buf_r8_kind = fill_r8_kind
-        endif
-      class default
-        call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
-                 & trim(variable_name))
-    end select
-
-    do i = 1, size(fileobj%pelist)
-      !< Set c relative to the starting global io domain index
-      c(xdim_index) = pe_isc(i) - xgmin + 1
-      c(ydim_index) = pe_jsc(i) - ygmin + 1
-      e(xdim_index) = pe_icsize(i)
-      e(ydim_index) = pe_jcsize(i)
-      select type(vdata)
-        type is (integer(kind=i4_kind))
-          call allocate_array(buf_i4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i4_kind, size(buf_i4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i4_kind, global_buf_i4_kind, c, e)
-          deallocate(buf_i4_kind)
-        type is (integer(kind=i8_kind))
-          call allocate_array(buf_i8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_i8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_i8_kind, size(buf_i8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_i8_kind, global_buf_i8_kind, c, e)
-          deallocate(buf_i8_kind)
-        type is (real(kind=r4_kind))
-          call allocate_array(buf_r4_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r4_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r4_kind, size(buf_r4_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r4_kind, global_buf_r4_kind, c, e)
-          deallocate(buf_r4_kind)
-        type is (real(kind=r8_kind))
-          call allocate_array(buf_r8_kind, e)
-          !Get the data for fileobj%pelist(i)'s portion of the compute domain.
-          if (i .eq. 1) then
-            !Root rank gets the data directly.
-            if (buffer_includes_halos) then
-              !Adjust if the input buffer has room for halos.
-              c(xdim_index) = isc - isd + 1
-              c(ydim_index) = jsc - jsd + 1
-            else
-              c(xdim_index) = 1
-              c(ydim_index) = 1
-            endif
-            call get_array_section(buf_r8_kind, vdata, c, e)
-            c(xdim_index) = pe_isc(i) - xgmin + 1
-            c(ydim_index) = pe_jsc(i) - ygmin + 1
-          else
-            !Receive data from non-root ranks.
-            call mpp_recv(buf_r8_kind, size(buf_r8_kind), fileobj%pelist(i), block=.true.)
-          endif
-          !Put local data into the global buffer.
-          call put_array_section(buf_r8_kind, global_buf_r8_kind, c, e)
-          deallocate(buf_r8_kind)
-      end select
-    enddo
-    deallocate(pe_isc)
-    deallocate(pe_iec)
-    deallocate(pe_icsize)
-    deallocate(pe_jsc)
-    deallocate(pe_jec)
-    deallocate(pe_jcsize)
-
-    !Write the out the data.
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_i8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r4_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call netcdf_write_data(fileobj, variable_name, global_buf_r8_kind, &
-                               unlim_dim_level=unlim_dim_level)
-        deallocate(global_buf_r8_kind)
-    end select
-  else
-    if (buffer_includes_halos) then
-      c(xdim_index) = isc - isd + 1
-      c(ydim_index) = jsc - jsd + 1
-    endif
-    e(xdim_index) = xc_size
-    e(ydim_index) = yc_size
-    select type(vdata)
-      type is (integer(kind=i4_kind))
-        call allocate_array(buf_i4_kind, e)
-        call get_array_section(buf_i4_kind, vdata, c, e)
-        call mpp_send(buf_i4_kind, size(buf_i4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i4_kind)
-      type is (integer(kind=i8_kind))
-        call allocate_array(buf_i8_kind, e)
-        call get_array_section(buf_i8_kind, vdata, c, e)
-        call mpp_send(buf_i8_kind, size(buf_i8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_i8_kind)
-      type is (real(kind=r4_kind))
-        call allocate_array(buf_r4_kind, e)
-        call get_array_section(buf_r4_kind, vdata, c, e)
-        call mpp_send(buf_r4_kind, size(buf_r4_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r4_kind)
-      type is (real(kind=r8_kind))
-        call allocate_array(buf_r8_kind, e)
-        call get_array_section(buf_r8_kind, vdata, c, e)
-        call mpp_send(buf_r8_kind, size(buf_r8_kind), fileobj%io_root)
-        call mpp_sync_self(check=event_send)
-        deallocate(buf_r8_kind)
-      class default
-        call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
-                 & trim(variable_name))
-    end select
+  ! The diagnostics manager always calls domain_write_4d regardless of the actual ndims of var
+  ! So, make sure to execute the correct routine:
+  err = pio_inq_varndims(fileobj%ncid, varid, ndims)
+  if (ndims == 2) then
+    call domain_write_2d(fileobj, variable_name, vdata(:,:,1,1), unlim_dim_level) ; return
+  elseif (ndims == 3) then
+    call domain_write_3d(fileobj, variable_name, vdata(:,:,1,:), unlim_dim_level) ; return
   endif
+
+
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      basetype_nf = PIO_INT
+    type is (real(kind=r4_kind))
+      basetype_nf = PIO_REAL
+    type is (real(kind=r8_kind))
+      basetype_nf = PIO_DOUBLE
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
+               & trim(variable_name))
+  end select
+
+  ! set the members of temporary vardesc instance, which is passed when calling PIO_write_darray
+  vardesc%varID = varid
+  vardesc%ncid = fileobj%ncid
+
+  decomp => get_decomp(fileobj, variable_name, vardesc, shape(vdata), basetype_nf, 4, xdim_index, ydim_index, unlim_dim_level)
+
+  err = 0
+  select type(vdata)
+    type is (integer(kind=i4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_i4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_i4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r4_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r4_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r4_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    type is (real(kind=r8_kind))
+      if (get_fill_value(fileobj, variable_name, fill_r8_kind, broadcast=.false.)) then
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err, fillval=fill_r8_kind)
+      else
+        call PIO_write_darray(fileobj%file_desc, vardesc, decomp%iodesc, vdata, err)
+      endif
+    class default
+      call error("unsupported variable type: domain_write_4d: file: "//trim(fileobj%path)//" variable:"// &
+               & trim(variable_name))
+  end select
+  call check_netcdf_code(err, "domain_write.inc")
+
 end subroutine domain_write_4d
 
 

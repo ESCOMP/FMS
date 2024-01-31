@@ -66,13 +66,25 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
     varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
     select type(variable_data)
       type is (integer(kind=i4_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        if (present(unlim_dim_level)) then
+          err = pio_put_var(fileobj%file_desc, varid, start=c(1:1), count=[1], ival=[variable_data])
+        else
+          err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        endif
       type is (integer(kind=i8_kind))
         call error(trim(fileobj%path)//": 64 bit integers are not supported with PIO.")
       type is (real(kind=r4_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        if (present(unlim_dim_level)) then
+          err = pio_put_var(fileobj%file_desc, varid, start=c(1:1), count=[1], ival=[variable_data])
+        else
+          err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        endif
       type is (real(kind=r8_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        if (present(unlim_dim_level)) then
+          err = pio_put_var(fileobj%file_desc, varid, start=c(1:1), count=[1], ival=[variable_data])
+        else
+          err = pio_put_var(fileobj%file_desc, varid, variable_data)
+        endif
       type is (character(len=*))
         call error(trim(fileobj%path)//": character write not implemented yet (netcdf_write_data.inc)")
         ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
@@ -101,7 +113,6 @@ subroutine netcdf_write_data_0d(fileobj, variable_name, variable_data, unlim_dim
     end select
     call check_netcdf_code(err, append_error_msg)
   !endif
-  print*, "dbg-wrote0d ", trim(variable_name)
 end subroutine netcdf_write_data_0d
 
 
@@ -136,6 +147,7 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
   integer :: j
   integer :: tlen
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+  integer :: true_ndim
 
   append_error_msg = "netcdf_write_data_1d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
 
@@ -150,9 +162,14 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
     else
       e(1:1) = shape(variable_data)
     endif
+    true_ndim = 1
     if (present(unlim_dim_level)) then
       unlim_dim_index = get_variable_unlimited_dimension_index(fileobj, variable_name, &
                                                                broadcast=.false.)
+      ! FMS doesn't count unlim (time) dimension towards the total number of variables dimension.
+      ! Thus, when the variable has an unlimited dimension, we call PIO appropriately, i.e., by
+      ! incrementing the number ndims to account for the time dimension.
+      true_ndim = 2
       if (unlim_dim_index .ne. 2) then
         call error("unlimited dimension must be the slowest varying dimension: "//trim(append_error_msg))
       endif
@@ -162,13 +179,13 @@ subroutine netcdf_write_data_1d(fileobj, variable_name, variable_data, unlim_dim
     varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
     select type(variable_data)
       type is (integer(kind=i4_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
+        err = pio_put_var(fileobj%file_desc, varid, start=c(1:true_ndim), count=e(1:true_ndim), ival=variable_data)
       type is (integer(kind=i8_kind))
         call error(trim(fileobj%path)//": 64 bit integers are not supported with PIO.")
       type is (real(kind=r4_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
+        err = pio_put_var(fileobj%file_desc, varid, start=c(1:true_ndim), count=e(1:true_ndim), ival=variable_data)
       type is (real(kind=r8_kind))
-        err = pio_put_var(fileobj%file_desc, varid, variable_data(c(1):e(1)))
+        err = pio_put_var(fileobj%file_desc, varid, start=c(1:true_ndim), count=e(1:true_ndim), ival=variable_data)
       type is (character(len=*))
         call error(trim(fileobj%path)//": character write not implemented yet (netcdf_write_data.inc)")
         ndims = get_variable_num_dimensions(fileobj, variable_name, broadcast=.false.)
@@ -362,44 +379,71 @@ subroutine netcdf_write_data_4d(fileobj, variable_name, variable_data, unlim_dim
   integer,dimension(5) :: c
   integer, dimension(5) :: e
   character(len=200) :: append_error_msg !< Msg to be appended to FATAL error message
+  integer :: ndim
 
-  print *, "ERRORline", 368, "write_data.inc"; call error("PIO version not implemented!!!")
+  unlim_dim_index = -1
+  c(:) = 1
+  if (present(corner)) then
+    c(1:4) = corner(:)
+  endif
+  e(:) = 1
+  if (present(edge_lengths)) then
+    e(1:4) = edge_lengths(:)
+  else
+    e(1:4) = shape(variable_data)
+  endif
+  if (present(unlim_dim_level)) then
+    unlim_dim_index = get_variable_unlimited_dimension_index(fileobj, variable_name, &
+                                                             broadcast=.false.)
+   if  (unlim_dim_index /= -1) then
+     c(unlim_dim_index) = unlim_dim_level
+   endif
+  endif
 
-  append_error_msg = "netcdf_write_data_4d: file:"//trim(fileobj%path)//" variable: "//trim(variable_name)
+  ndim = get_variable_num_dimensions(fileobj, variable_name)
 
-  if (fileobj%is_root) then
-    c(:) = 1
-    if (present(corner)) then
-      c(1:4) = corner(:)
+  if (unlim_dim_index == -1) then 
+    ! The field has NO time dimension
+    if (ndim == 1) then
+      if (size(variable_data,2)/=1 .or. size(variable_data,3)/=1 .or. size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_1d(fileobj, variable_name, variable_data(:,1,1,1), unlim_dim_level, c(1), e(1))
+      return
+    elseif (ndim == 2) then
+      if (size(variable_data,3)/=1 .or. size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_2d(fileobj, variable_name, variable_data(:,:,1,1), unlim_dim_level, c(1:2), e(1:2))
+      return
+    elseif (ndim == 3) then
+        if (size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_3d(fileobj, variable_name, variable_data(:,:,:,1), unlim_dim_level, c(1:3), e(1:3))
+      return
     endif
-    e(:) = 1
-    if (present(edge_lengths)) then
-      e(1:4) = edge_lengths(:)
-    else
-      e(1:4) = shape(variable_data)
+  else
+    ! The field has time dimension
+    if (ndim == 1) then
+      if (size(variable_data,1)/=1 .or. size(variable_data,2)/=1 .or. size(variable_data,3)/=1 .or. size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_0d(fileobj, variable_name, variable_data(1,1,1,1), unlim_dim_level, c(1))
+      return
+    elseif (ndim == 2) then
+      if (size(variable_data,2)/=1 .or. size(variable_data,3)/=1 .or. size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_1d(fileobj, variable_name, variable_data(:,1,1,1), unlim_dim_level, c(1:2), e(1:2))
+      return
+    elseif (ndim == 3) then
+        if (size(variable_data,3)/=1 .or. size(variable_data,4)/=1) then
+        call error("PIO data size assertion violation in netcdf_write_data_4d")
+      endif
+      call netcdf_write_data_2d(fileobj, variable_name, variable_data(:,:,1,1), unlim_dim_level, c(1:3), e(1:3))
+      return
     endif
-    if (present(unlim_dim_level)) then
-      unlim_dim_index = get_variable_unlimited_dimension_index(fileobj, variable_name, &
-                                                               broadcast=.false.)
-     if  (unlim_dim_index /= -1) then
-       c(unlim_dim_index) = unlim_dim_level
-     endif
-    endif
-    call set_netcdf_mode(fileobj%ncid, data_mode)
-    varid = get_variable_id(fileobj%ncid, trim(variable_name), msg=append_error_msg)
-    select type(variable_data)
-      type is (integer(kind=i4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
-      type is (integer(kind=i8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
-      type is (real(kind=r4_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
-      type is (real(kind=r8_kind))
-        err = nf90_put_var(fileobj%ncid, varid, variable_data, start=c, count=e)
-      class default
-        call error("Unsupported variable type: "//trim(append_error_msg))
-    end select
-    call check_netcdf_code(err, append_error_msg)
   endif
 end subroutine netcdf_write_data_4d
 
