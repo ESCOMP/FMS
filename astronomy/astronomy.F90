@@ -636,7 +636,7 @@ real, intent(in) :: per_in !< Longitude of perihelion with respect to autumnal
       if (ecc_in < 0.0 .or. ecc_in > 0.99) &
         call error_mesg ('astronomy_mod', &
                       'ecc must be between 0 and 0.99', FATAL)
-      if (obliq_in < -90.0 .or. obliq > 90.0) &
+      if (obliq_in < -90.0 .or. obliq_in > 90.0) &
         call error_mesg ('astronomy_mod', &
                 'obliquity must be between -90. and 90. degrees', FATAL)
       if (per_in < 0.0 .or. per_in > 360.0) &
