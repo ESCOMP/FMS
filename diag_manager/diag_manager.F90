@@ -208,7 +208,7 @@ use platform_mod
        & get_ticks_per_second
   USE mpp_mod, ONLY: mpp_get_current_pelist, mpp_pe, mpp_npes, mpp_root_pe, mpp_sum
 
-  USE mpp_mod, ONLY: input_nml_file
+  USE mpp_mod, ONLY: input_nml_file, mpp_sync
 
   USE fms_mod, ONLY: error_mesg, FATAL, WARNING, NOTE, stdout, stdlog, write_version_number,&
        & fms_error_handler, check_nml_error, lowercase
@@ -239,6 +239,7 @@ use platform_mod
   USE fms_diag_outfield_mod, ONLY: fmsDiagOutfieldIndex_type, fmsDiagOutfield_type
   USE fms_diag_fieldbuff_update_mod, ONLY: fieldbuff_update, fieldbuff_copy_missvals, &
    & fieldbuff_copy_fieldvals
+  use netcdf_io_mod, ONLY: file_path_list, files_to_combine
 
 #ifdef use_netCDF
   USE netcdf, ONLY: NF90_INT, NF90_FLOAT, NF90_CHAR
@@ -250,6 +251,10 @@ use platform_mod
   use diag_axis_mod, only: DIAG_AXIS_UGDOMAIN
 !----------
 
+use iso_fortran_env, only: compiler_version
+use iso_c_binding, only : c_int, c_char, c_ptr, c_null_ptr, c_null_char
+use, intrinsic :: iso_c_binding, only: c_int, c_char
+
   IMPLICIT NONE
 
   PRIVATE
@@ -258,7 +263,8 @@ use platform_mod
        & need_data, DIAG_ALL, DIAG_OCEAN, DIAG_OTHER, get_date_dif, DIAG_SECONDS,&
        & DIAG_MINUTES, DIAG_HOURS, DIAG_DAYS, DIAG_MONTHS, DIAG_YEARS, get_diag_global_att,&
        & set_diag_global_att, diag_field_add_attribute, diag_field_add_cell_measures,&
-       & get_diag_field_id, diag_axis_add_attribute, CMOR_MISSING_VALUE, null_axis_id
+       & get_diag_field_id, diag_axis_add_attribute, CMOR_MISSING_VALUE, null_axis_id,&
+       & exec_mppnccombine
   PUBLIC :: CENTER, NORTH, EAST !< Used for diag_axis_init
   ! Public interfaces from diag_grid_mod
   PUBLIC :: diag_grid_init, diag_grid_end
@@ -368,6 +374,17 @@ use platform_mod
      MODULE PROCEDURE diag_field_add_attribute_r1d
      MODULE PROCEDURE diag_field_add_attribute_i1d
   END INTERFACE diag_field_add_attribute
+
+! ----- interface to the C function -----
+interface 
+  function exec_mppnccombine(outfile, infiles) bind(C)
+    use, intrinsic :: iso_c_binding, only: c_int, c_char
+    implicit none
+    character(kind=c_char) :: outfile
+    character(kind=c_char) :: infiles
+    integer(c_int) :: exec_mppnccombine
+  endfunction exec_mppnccombine
+endinterface
 
 !> @addtogroup diag_manager_mod
 !> @{
@@ -3687,11 +3704,39 @@ CONTAINS
     DO file = 1, num_files
        CALL closing_file(file, time)
     END DO
+
+    ! barrier to make sure all io PEs are done closing all files to be combined.
+    call mpp_sync()
+
+    ! combine partitioned netcdf files into single file
+    call combine_files()
+
     if (allocated(fileobjU)) deallocate(fileobjU)
     if (allocated(fileobj)) deallocate(fileobj)
     if (allocated(fileobjND)) deallocate(fileobjND)
     if (allocated(fnum_for_domain)) deallocate(fnum_for_domain)
   END SUBROUTINE diag_manager_end
+
+  subroutine combine_files()
+    integer(c_int) :: ireturn
+    type(file_path_list), pointer :: current
+    character(len=:), allocatable :: filepath
+    character(kind=c_char, len=256) :: outfile, infiles
+
+    ! loop through files to combine:
+    if (mpp_pe() == mpp_root_pe()) then
+      current => files_to_combine
+      do while (associated(current))
+        filepath = trim(adjustl(current%path))
+        outfile = filepath(1:len(filepath)-5) // c_null_char
+        infiles = filepath(1:len(filepath)-5) // ".*" // c_null_char 
+        ireturn = exec_mppnccombine(outfile, infiles)
+        if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed', FATAL)
+        current => current%next
+      end do
+    end if
+
+   end subroutine combine_files
 
   !> @brief Replaces diag_manager_end; close just one file: files(file)
   SUBROUTINE closing_file(file, time)

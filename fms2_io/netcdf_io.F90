@@ -167,6 +167,12 @@ type, public :: Valid_t
   real(kind=r8_kind) :: missing_val !< Unpacked missing value for a variable.
 endtype Valid_t
 
+! A linked list of file paths that need to be combined.
+type, public :: file_path_list
+  character(len=256) :: path
+  type(file_path_list), pointer :: next => null()
+end type file_path_list
+type(file_path_list), pointer :: files_to_combine => null()
 
 public :: netcdf_io_init
 public :: netcdf_file_open
@@ -240,6 +246,7 @@ public :: set_fileobj_time_name
 public :: write_restart_bc
 public :: read_restart_bc
 public :: flush_file
+public :: files_to_combine
 
 !> @ingroup netcdf_io_mod
 interface netcdf_add_restart_variable
@@ -691,6 +698,26 @@ subroutine netcdf_file_close(fileobj)
 
   integer :: err
   integer :: i
+  type(file_path_list), pointer :: current
+
+  ! Append the file to the list of files to combine if it is a partition of a netcdf file.
+  if ( (.not. fileobj%is_readonly) .and. fileobj%is_root .and. len_trim(fileobj%path) > 7) then
+    if (fileobj%path(len_trim(fileobj%path)-7:len_trim(fileobj%path)-4) == ".nc.") then
+      if (.not. associated(files_to_combine)) then
+        allocate(files_to_combine)
+        call string_copy(files_to_combine%path, trim(fileobj%path))
+      else
+        current => files_to_combine
+        do while (associated(current%next))
+          current => current%next
+        enddo
+        allocate(current%next)
+        call string_copy(current%next%path, trim(fileobj%path))
+      endif
+    else if (fileobj%path(len_trim(fileobj%path)-2:len_trim(fileobj%path)) /= ".nc") then
+      call error("netcdf_file_close: Encountered unexpected netcdf file suffix: "//trim(fileobj%path))
+    endif
+  endif
 
   if (fileobj%is_root) then
     err = nf90_close(fileobj%ncid)
