@@ -377,6 +377,11 @@ char** find_files(const char* pattern, int* count) {
       argv[2 + i] = infiles_array[i];
     }
 
+    // if an old version exists, remove the output file
+    if (access(outfile, F_OK) == 0) {
+      remove(outfile);
+    }
+
     // call the main mppnccombine function
     iret = main_(argc, argv);
 
