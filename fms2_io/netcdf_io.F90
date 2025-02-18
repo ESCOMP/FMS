@@ -149,7 +149,7 @@ type, public :: FmsNetcdfFile_t
   character (len=20) :: time_name
   type(dimension_information) :: bc_dimensions !<information about the current dimensions for regional
                                                !! restart variables
-
+  integer :: extent_type = 0 !< 0=unknown, 1=global, 2=section
 endtype FmsNetcdfFile_t
 
 
@@ -168,11 +168,12 @@ type, public :: Valid_t
 endtype Valid_t
 
 ! A linked list of file paths that need to be combined.
-type, public :: file_path_list
+type, public :: filepath_list_type
   character(len=256) :: path
-  type(file_path_list), pointer :: next => null()
-end type file_path_list
-type(file_path_list), pointer :: files_to_combine => null()
+  type(filepath_list_type), pointer :: next => null()
+end type filepath_list_type
+type(filepath_list_type), pointer :: partitioned_global_files => null()
+type(filepath_list_type), pointer :: partitioned_section_files => null()
 
 public :: netcdf_io_init
 public :: netcdf_file_open
@@ -246,7 +247,8 @@ public :: set_fileobj_time_name
 public :: write_restart_bc
 public :: read_restart_bc
 public :: flush_file
-public :: files_to_combine
+public :: partitioned_global_files
+public :: partitioned_section_files 
 
 !> @ingroup netcdf_io_mod
 interface netcdf_add_restart_variable
@@ -690,6 +692,23 @@ function netcdf_file_open(fileobj, path, mode, nc_format, pelist, is_restart, do
 
 end function netcdf_file_open
 
+subroutine append_to_filepath_list(fileobj, filepath_list)
+  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+  type(filepath_list_type), pointer :: filepath_list !< File path list.
+  type(filepath_list_type), pointer :: current
+
+  if (.not. associated(filepath_list)) then
+    allocate(filepath_list)
+    call string_copy(filepath_list%path, trim(fileobj%path))
+  else
+    current => filepath_list
+    do while (associated(current%next))
+      current => current%next
+    enddo
+    allocate(current%next)
+    call string_copy(current%next%path, trim(fileobj%path))
+  endif
+end subroutine append_to_filepath_list
 
 !> @brief Close a netcdf file.
 subroutine netcdf_file_close(fileobj)
@@ -698,21 +717,16 @@ subroutine netcdf_file_close(fileobj)
 
   integer :: err
   integer :: i
-  type(file_path_list), pointer :: current
 
   ! Append the file to the list of files to combine if it is a partition of a netcdf file.
   if ( (.not. fileobj%is_readonly) .and. fileobj%is_root .and. len_trim(fileobj%path) > 7) then
     if (fileobj%path(len_trim(fileobj%path)-7:len_trim(fileobj%path)-4) == ".nc.") then
-      if (.not. associated(files_to_combine)) then
-        allocate(files_to_combine)
-        call string_copy(files_to_combine%path, trim(fileobj%path))
+      if (fileobj%extent_type == 1) then
+        call append_to_filepath_list(fileobj, partitioned_global_files)
+      else if (fileobj%extent_type == 2) then
+        call append_to_filepath_list(fileobj, partitioned_section_files)
       else
-        current => files_to_combine
-        do while (associated(current%next))
-          current => current%next
-        enddo
-        allocate(current%next)
-        call string_copy(current%next%path, trim(fileobj%path))
+        call error("netcdf_file_close: Encountered unexpected extent type: "//trim(fileobj%path))
       endif
     else if (fileobj%path(len_trim(fileobj%path)-2:len_trim(fileobj%path)) /= ".nc") then
       call error("netcdf_file_close: Encountered unexpected netcdf file suffix: "//trim(fileobj%path))

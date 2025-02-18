@@ -127,12 +127,14 @@ CONTAINS
      !> Check if there is an io_domain
      iF ( associated(mpp_get_io_domain(domain)) ) then
        fileob => fileobj
+       fileob%extent_type = 1
        if (.not.check_if_open(fileob)) call open_check(open_file(fileobj, trim(file_name)//".nc", "overwrite", &
                             domain, is_restart=.false.))
        fnum_domain = "2d" ! 2d domain
        file_unit = 2
      elSE !< No io domain, so every core is going to write its own file.
        fileob => fileobjND
+       fileob%extent_type = 2
        mype = mpp_pe()
        write(mype_string,'(I0.4)') mype
         if (.not.check_if_open(fileob)) then

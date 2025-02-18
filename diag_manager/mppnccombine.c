@@ -141,6 +141,7 @@
  #include <sys/types.h>
  #include <unistd.h>
  #include <glob.h>
+ #include <limits.h>
  
  #ifndef MAX_BF
  #define MAX_BF 100 /* maximum blocking factor */
@@ -185,7 +186,6 @@
                    unsigned char, int, int, int);
  int process_vars (struct fileinfo *, struct fileinfo *, unsigned char, int *,
                    int *, int *, int, int, int, unsigned char, unsigned char);
-
 int flush_decomp (struct fileinfo *, int, int, int, unsigned char);
  void print_debug (struct fileinfo *, unsigned char);
  char *nc_type_to_str (nc_type);
@@ -248,15 +248,31 @@ int flush_decomp (struct fileinfo *, int, int, int, unsigned char);
      printf ("%.0f\n", ceil ((float)estimated_maxrss / (1024 * 1024)));
    return;
  }
- 
-int iama_function(int *somearg, char *cdata, int clen) {
-  int i;
-  for( i=0; i<clen; i++) {
-      if( cdata[i]>='A' && cdata[i]<='Z')
-        cdata[i] = cdata[i]+*somearg;
+
+int get_num_files(char* pattern) {
+  /* This function uses the glob library to find files matching the given pattern.
+    * It returns the number of matched files.
+    * -aa
+   */
+  glob_t globbuf;
+
+  // Initialize glob result structure
+  memset(&globbuf, 0, sizeof(globbuf));
+
+  // Perform the glob operation
+  int result = glob(pattern, GLOB_TILDE, NULL, &globbuf);
+  if (result != 0) {
+      // No matches or glob error
+      globfree(&globbuf);
+      return 0;
   }
-  *somearg = -(*somearg); // negate it
-  return(i);
+
+  int count = (int)globbuf.gl_pathc;
+
+  // Free the memory used by glob
+  globfree(&globbuf);
+
+  return count;
 }
 
 char** find_files(const char* pattern, int* count) {
@@ -314,6 +330,27 @@ char** find_files(const char* pattern, int* count) {
 
   return files;
 }
+
+ int smallest_pix_suffix(char* pattern){
+    /* This function finds the smallest suffix of the given pattern that matches
+      * a file. It returns the smallest suffix as an integer.
+      * -aa
+    */
+    int smallest_suffix = INT_MAX;
+    int count = 0;
+    char** files = find_files(pattern, &count);
+    if (files == NULL || count == 0) {
+        fprintf(stderr, "Error: no files matched or an error occurred\n");
+        return 1;
+    }
+    for (int i = 0; i < count; i++) {
+        int suffix = atoi(files[i] + strlen(files[i]) - 4);
+        if (suffix < smallest_suffix) {
+            smallest_suffix = suffix;
+        }
+    }
+    return smallest_suffix;
+ }
 
  int exec_mppnccombine(char *outfile, char *infiles){
     /* A wrapper function for main_ that takes a single string of input files
