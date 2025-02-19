@@ -383,6 +383,7 @@ function open_domain_file(fileobj, path, mode, domain, nc_format, is_restart, do
   allocate(pelist(pelist_size))
   call mpp_get_pelist(io_domain, pelist)
   fileobj%adjust_indices = .true. !Set the default to true
+  fileobj%extent_type = 1 ! Extent type 1 is for domain decomposed files (needed for auto combine)
 
   !Open the distibuted files.
   success = netcdf_file_open(fileobj, distributed_filepath, mode, nc_format, pelist, &

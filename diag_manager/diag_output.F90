@@ -42,7 +42,7 @@ use,intrinsic :: iso_c_binding, only: c_double,c_float,c_int64_t, &
        & get_domainUG, get_diag_axis_name
   USE diag_data_mod, ONLY: pack_size, diag_fieldtype, diag_global_att_type, CMOR_MISSING_VALUE, diag_atttype, files
   USE time_manager_mod, ONLY: get_calendar_type, valid_calendar_types
-  USE fms_mod, ONLY: error_mesg, mpp_pe, write_version_number, fms_error_handler, FATAL, note
+  USE fms_mod, ONLY: error_mesg, write_version_number, fms_error_handler, FATAL, note
 
 #ifdef use_netCDF
   USE netcdf, ONLY: NF90_INT, NF90_FLOAT, NF90_CHAR
@@ -127,14 +127,14 @@ CONTAINS
      !> Check if there is an io_domain
      iF ( associated(mpp_get_io_domain(domain)) ) then
        fileob => fileobj
-       fileob%extent_type = 1
+       fileob%extent_type = 1 ! Extent type 1 is for domain decomposed files (needed for auto combine)
        if (.not.check_if_open(fileob)) call open_check(open_file(fileobj, trim(file_name)//".nc", "overwrite", &
                             domain, is_restart=.false.))
        fnum_domain = "2d" ! 2d domain
        file_unit = 2
      elSE !< No io domain, so every core is going to write its own file.
        fileob => fileobjND
-       fileob%extent_type = 2
+       fileob%extent_type = 2 ! Extent type 2 is for section files (needed for auto combine)
        mype = mpp_pe()
        write(mype_string,'(I0.4)') mype
         if (.not.check_if_open(fileob)) then
