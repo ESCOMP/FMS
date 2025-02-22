@@ -29,6 +29,7 @@ use mpp_domains_mod
 use fms_io_utils_mod
 use netcdf_io_mod
 use platform_mod
+use iso_c_binding, only: c_null_char
 implicit none
 private
 
@@ -106,6 +107,15 @@ interface compute_global_checksum
   module procedure compute_global_checksum_3d
   module procedure compute_global_checksum_4d
 end interface compute_global_checksum
+
+interface
+  function delete_file(filename) bind(c)
+    use, intrinsic :: iso_c_binding, only: c_int, c_char
+    implicit none
+    character(kind=c_char) :: filename(*)
+    integer(kind=c_int) :: delete_file
+  end function delete_file
+end interface
 
 !> @addtogroup fms_netcdf_domain_io_mod
 !> @{
@@ -383,19 +393,22 @@ function open_domain_file(fileobj, path, mode, domain, nc_format, is_restart, do
   allocate(pelist(pelist_size))
   call mpp_get_pelist(io_domain, pelist)
   fileobj%adjust_indices = .true. !Set the default to true
-  fileobj%extent_type = 1 ! Extent type 1 is for domain decomposed files (needed for auto combine)
 
   !Open the distibuted files.
   success = netcdf_file_open(fileobj, distributed_filepath, mode, nc_format, pelist, &
                              is_restart, dont_add_res_to_filename)
   if (string_compare(mode, "read", .true.) .or. string_compare(mode, "append", .true.)) then
     if (success) then
-      if (.not. string_compare(distributed_filepath, combined_filepath)) then
+      if (mpp_pe() == mpp_root_pe() .and. .not. string_compare(distributed_filepath, combined_filepath)) then
         success2 = netcdf_file_open(fileobj2, combined_filepath, mode, nc_format, pelist, &
                                     is_restart, dont_add_res_to_filename)
         if (success2) then
-          call error("The domain decomposed file:"//trim(fileobj%path)// &
-                   & " contains both combined (*.nc) and distributed files (*.nc.XXXX).")
+          print *, "The domain decomposed file:"//trim(fileobj%path)// &
+                     & " contains both combined (*.nc) and distributed files (*.nc.XXXX)."// &
+                     & " Deleting the combined file (must be left over from a previous run)."
+          if (delete_file(trim(combined_filepath)//c_null_char) /= 0) then
+            call error("Failed to delete the combined file:"//trim(combined_filepath)//c_null_char)
+          endif
         endif
       endif
     else

@@ -275,6 +275,18 @@ int get_num_files(char* pattern) {
   return count;
 }
 
+int delete_file(char* filename) {
+  /* This function deletes the given file.
+    * Returns 0 on success, 1 on failure.
+    * -aa
+   */
+  if (remove(filename) != 0) {
+    fprintf(stderr, "Error: unable to delete file %s\n", filename);
+    return 1;
+  }
+  return 0;
+}
+
 char** find_files(const char* pattern, int* count) {
   /* This function uses the glob library to find files matching the given pattern.
     * It returns an array of file-path strings and sets the count to the number of

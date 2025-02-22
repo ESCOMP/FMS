@@ -149,7 +149,6 @@ type, public :: FmsNetcdfFile_t
   character (len=20) :: time_name
   type(dimension_information) :: bc_dimensions !<information about the current dimensions for regional
                                                !! restart variables
-  integer :: extent_type = 0 !< 0=unknown, 1=global, 2=section
 endtype FmsNetcdfFile_t
 
 
@@ -721,13 +720,12 @@ subroutine netcdf_file_close(fileobj)
   ! Append the file to the list of files to combine if it is a partition of a netcdf file.
   if ( (.not. fileobj%is_readonly) .and. fileobj%is_root .and. len_trim(fileobj%path) > 7) then
     if (fileobj%path(len_trim(fileobj%path)-7:len_trim(fileobj%path)-4) == ".nc.") then
-      if (fileobj%extent_type == 1) then
-        call append_to_filepath_list(fileobj, partitioned_global_files)
-      else if (fileobj%extent_type == 2) then
-        call append_to_filepath_list(fileobj, partitioned_section_files)
-      else
-        call error("netcdf_file_close: Encountered unexpected extent type: "//trim(fileobj%path))
-      endif
+      select type(fileobj)
+        type is (FmsNetcdfFile_t)
+          call append_to_filepath_list(fileobj, partitioned_section_files)
+        class default ! FmsNetcdfDomainFile_t
+          call append_to_filepath_list(fileobj, partitioned_global_files)
+      end select
     else if (fileobj%path(len_trim(fileobj%path)-2:len_trim(fileobj%path)) /= ".nc") then
       call error("netcdf_file_close: Encountered unexpected netcdf file suffix: "//trim(fileobj%path))
     endif
