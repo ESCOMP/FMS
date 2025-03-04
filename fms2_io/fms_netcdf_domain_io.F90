@@ -363,6 +363,9 @@ function open_domain_file(fileobj, path, mode, domain, nc_format, is_restart, do
   integer, dimension(:), allocatable :: pelist
   logical :: success2
   type(FmsNetcdfDomainFile_t) :: fileobj2
+  integer :: stdoutunit
+
+  stdoutunit = stdout()
 
   !Get the path of a "combined" file.
   io_layout = mpp_get_io_domain_layout(domain)
@@ -403,9 +406,9 @@ function open_domain_file(fileobj, path, mode, domain, nc_format, is_restart, do
         success2 = netcdf_file_open(fileobj2, combined_filepath, mode, nc_format, pelist, &
                                     is_restart, dont_add_res_to_filename)
         if (success2) then
-          print *, "The domain decomposed file:"//trim(fileobj%path)// &
-                     & " contains both combined (*.nc) and distributed files (*.nc.XXXX)."// &
-                     & " Deleting the combined file (must be left over from a previous run)."
+          write(stdoutunit, *) "The domain decomposed file:"//trim(fileobj%path)// &
+                               & " contains both combined (*.nc) and distributed files (*.nc.XXXX)."// &
+                               & " Deleting the distributed file (must be left over from a previous run)."
           if (delete_file(trim(combined_filepath)//c_null_char) /= 0) then
             call error("Failed to delete the combined file:"//trim(combined_filepath)//c_null_char)
           endif

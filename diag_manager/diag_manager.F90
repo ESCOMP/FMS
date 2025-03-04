@@ -230,7 +230,7 @@ use platform_mod
        & use_cmor, issue_oor_warnings, oor_warnings_fatal, oor_warning, pack_size,&
        & max_out_per_in_field, flush_nc_files, region_out_use_alt_value, max_field_attributes, output_field_type,&
        & max_file_attributes, max_axis_attributes, prepend_date, DIAG_FIELD_NOT_FOUND, diag_init_time, diag_data_init,&
-       & use_mpp_io, use_refactored_send
+       & use_mpp_io, use_refactored_send, auto_merge_nc
   USE diag_data_mod, ONLY:  fileobj, fileobjU, fnum_for_domain, fileobjND
   USE diag_table_mod, ONLY: parse_diag_table
   USE diag_output_mod, ONLY: get_diag_global_att, set_diag_global_att
@@ -377,19 +377,18 @@ use, intrinsic :: iso_c_binding, only: c_int, c_char
 
 ! ----- interface to the C function -----
 interface 
-  function exec_mppnccombine(outfile, infiles) bind(C)
+  function exec_mppnccombine(outfile) bind(C)
     use, intrinsic :: iso_c_binding, only: c_int, c_char
     implicit none
     character(kind=c_char) :: outfile
-    character(kind=c_char) :: infiles
     integer(c_int) :: exec_mppnccombine
   endfunction exec_mppnccombine
-  function get_num_files(pattern) bind(C)
+  function num_partitioned_files(outfile) bind(C)
     use, intrinsic :: iso_c_binding, only: c_int, c_char
     implicit none
-    character(kind=c_char) :: pattern
-    integer(c_int) :: get_num_files
-  endfunction get_num_files
+    character(kind=c_char) :: outfile
+    integer(c_int) :: num_partitioned_files
+  endfunction num_partitioned_files
   function smallest_pix_suffix(pattern) bind(C)
     use, intrinsic :: iso_c_binding, only: c_int, c_char
     implicit none
@@ -3721,7 +3720,7 @@ CONTAINS
     call mpp_sync()
 
     ! combine partitioned netcdf files into single file
-    call combine_files()
+    if ( auto_merge_nc ) call combine_files()
 
     if (allocated(fileobjU)) deallocate(fileobjU)
     if (allocated(fileobj)) deallocate(fileobj)
@@ -3737,7 +3736,7 @@ CONTAINS
     integer :: f
     type(filepath_list_type), pointer :: current
     character(len=:), allocatable :: filepath
-    character(kind=c_char, len=256) :: outfile, infiles
+    character(kind=c_char, len=256) :: outfile
     integer :: stdout_unit
 
     stdout_unit = stdout()
@@ -3751,18 +3750,16 @@ CONTAINS
     do while (associated(current))
       filepath = trim(adjustl(current%path))
       outfile = filepath(1:len(filepath)-5) // c_null_char
-      infiles = filepath(1:len(filepath)-5) // ".*" // c_null_char 
 
       ! get the number of files to combine (for the first file only). The number of files is the same for all global files.
-      if (niopes == 0) niopes = get_num_files(infiles)
+      if (niopes == 0) niopes = num_partitioned_files(outfile)
 
       ! Read the IO PE index (pix) from the file suffix (e.g., 0000, 0001, etc.)
       read(filepath(len(filepath)-3:len(filepath)),*) pix
-      !print *, "pix = ", pix, " filepath = ", trim(filepath), " niopes = ", niopes
 
       if (mod(f, niopes) == pix) then
         !write(stdout_unit,*) 'Combining file' // trim(outfile)
-        ireturn = exec_mppnccombine(outfile, infiles)
+        ireturn = exec_mppnccombine(outfile)
         if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed', FATAL)
       end if
 
@@ -3775,19 +3772,18 @@ CONTAINS
     do while (associated(current))
       filepath = trim(adjustl(current%path))
       outfile = filepath(1:len(filepath)-5) // c_null_char
-      infiles = filepath(1:len(filepath)-5) // ".*" // c_null_char
 
       ! Read the IO PE index (pix) from the file suffix (e.g., 0000, 0001, etc.)
       read(filepath(len(filepath)-3:len(filepath)),*) pix
 
       ! get the smallest IO PE index of the set of IO PEs writing the current section file
-      smallest_pix = smallest_pix_suffix(infiles)
+      smallest_pix = smallest_pix_suffix(outfile)
 
-      print *, "pix = ", pix, " filepath = ", trim(filepath), " smallest_pix = ", smallest_pix, pix == smallest_pix
+      !print *, "pix = ", pix, " filepath = ", trim(filepath), " smallest_pix = ", smallest_pix, pix == smallest_pix
 
       if (pix == smallest_pix) then
         !write(stdout_unit,*) 'Combining file' // trim(outfile)
-        ireturn = exec_mppnccombine(outfile, infiles)
+        ireturn = exec_mppnccombine(outfile)
         if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed', FATAL)
       end if
 
@@ -3892,7 +3888,7 @@ CONTAINS
          & max_num_axis_sets, max_files, use_cmor, issue_oor_warnings,&
          & oor_warnings_fatal, max_out_per_in_field, flush_nc_files, region_out_use_alt_value, max_field_attributes,&
          & max_file_attributes, max_axis_attributes, prepend_date, use_mpp_io, field_log_separator,&
-         & use_refactored_send
+         & use_refactored_send, auto_merge_nc
 
     ! If the module was already initialized do nothing
     IF ( module_is_initialized ) RETURN

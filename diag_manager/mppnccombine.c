@@ -249,12 +249,27 @@ int flush_decomp (struct fileinfo *, int, int, int, unsigned char);
    return;
  }
 
-int get_num_files(char* pattern) {
+int delete_file(char* filename) {
+  /* This function deletes the given file.
+    * Returns 0 on success, 1 on failure.
+    * -aa
+   */
+  if (remove(filename) != 0) {
+    fprintf(stderr, "Error: unable to delete file %s\n", filename);
+    return 1;
+  }
+  return 0;
+}
+
+int num_partitioned_files(const char* filepath) {
   /* This function uses the glob library to find files matching the given pattern.
     * It returns the number of matched files.
     * -aa
    */
+  char pattern[1024];
   glob_t globbuf;
+
+  snprintf(pattern, sizeof(pattern), "%s.[0-9][0-9][0-9][0-9]", filepath);
 
   // Initialize glob result structure
   memset(&globbuf, 0, sizeof(globbuf));
@@ -275,19 +290,7 @@ int get_num_files(char* pattern) {
   return count;
 }
 
-int delete_file(char* filename) {
-  /* This function deletes the given file.
-    * Returns 0 on success, 1 on failure.
-    * -aa
-   */
-  if (remove(filename) != 0) {
-    fprintf(stderr, "Error: unable to delete file %s\n", filename);
-    return 1;
-  }
-  return 0;
-}
-
-char** find_files(const char* pattern, int* count) {
+char** find_partitioned_files(const char* filepath, int* count) {
   /* This function uses the glob library to find files matching the given pattern.
     * It returns an array of file-path strings and sets the count to the number of
     * matched files.
@@ -295,7 +298,10 @@ char** find_files(const char* pattern, int* count) {
     * Returns NULL if no files match or an error occurs.
     * -aa
    */
+  char pattern[1024];
   glob_t globbuf;
+
+  snprintf(pattern, sizeof(pattern), "%s.[0-9][0-9][0-9][0-9]", filepath);
 
   // Initialize glob result structure
   memset(&globbuf, 0, sizeof(globbuf));
@@ -343,14 +349,14 @@ char** find_files(const char* pattern, int* count) {
   return files;
 }
 
- int smallest_pix_suffix(char* pattern){
+ int smallest_pix_suffix(char* outfile){
     /* This function finds the smallest suffix of the given pattern that matches
       * a file. It returns the smallest suffix as an integer.
       * -aa
     */
     int smallest_suffix = INT_MAX;
     int count = 0;
-    char** files = find_files(pattern, &count);
+    char** files = find_partitioned_files(outfile, &count);
     if (files == NULL || count == 0) {
         fprintf(stderr, "Error: no files matched or an error occurred\n");
         return 1;
@@ -364,57 +370,24 @@ char** find_files(const char* pattern, int* count) {
     return smallest_suffix;
  }
 
- int exec_mppnccombine(char *outfile, char *infiles){
+ int exec_mppnccombine(char *outfile){
     /* A wrapper function for main_ that takes a single string of input files
     * and a single string of output file. This function is called from diag_manager.F90
     * It expands the input files if a wildcard is given and calls main_.
     * It returns the return value of main_.
     * -aa
     */
-    char *infiles_in;     // Local copy of infiles argument
-    char **infiles_array; // Array of strings to hold the list of expanded input files
-    char **argv;          // Array of strings to hold the list of input files 
-    int argc = 0;         // Number of arguments to pass to main_
-    int file_count = 0;   // Number of input files
-    int iret;             // Return value of main_
+    char **partitioned_files; // Array of strings to hold the list of expanded input files
+    char **argv;              // Array of strings to hold the list of arguments to pass to main_
+    int argc = 0;             // Number of arguments to pass to main_
+    int file_count = 0;       // Number of input files
+    int iret;                 // Return value of main_
 
-    // Get a local copy of infiles argument. This is needed because strtok
-    // leads to segfault when called on the argument directly.
-    infiles_in = (char *)malloc(strlen(infiles) + 1);
-    if (infiles_in == NULL) {
-        fprintf(stderr, "Error: unable to allocate memory\n");
-        return 1;
-    }
-    strcpy(infiles_in, infiles);
-
-    // if a list of files delimited by space is given, then split it into an array
-    if (strchr(infiles_in, ' ') != NULL) {
-      char *p = strtok(infiles_in, " ");
-      while (p != NULL) {
-        file_count++;
-        p = strtok(NULL, " ");
-      }
-      infiles_array = (char **)malloc(file_count * sizeof(char *));
-      strcpy(infiles_in, infiles);
-      p = strtok(infiles_in, " ");
-      for (int i = 0; i < file_count; i++) {
-        infiles_array[i] = p;
-        p = strtok(NULL, " ");
-      }
-    }
-    // if a wildcard is given, then expand it into the 
-    else if (strchr(infiles_in, '*') != NULL || strchr(infiles_in, '?') != NULL) {
-      infiles_array = find_files(infiles_in, &file_count);
-      if (infiles_array == NULL || file_count == 0) {
-        fprintf(stderr, "Error: no files matched or an error occurred\n");
-        return 1;
-      }
-    }
-    // if a single file is given, then put it into the array
-    else {
-      file_count = 1;
-      infiles_array = (char **)malloc(1 * sizeof(char *));
-      infiles_array[0] = infiles_in;
+    // Expand the input files
+    partitioned_files = find_partitioned_files(outfile, &file_count);
+    if (partitioned_files == NULL || file_count == 0) {
+      fprintf(stderr, "Error: no files matched or an error occurred\n");
+      return 1;
     }
 
     argc = 2 + file_count;
@@ -423,7 +396,7 @@ char** find_files(const char* pattern, int* count) {
     argv[0] = "mppnccombine";
     argv[1] = outfile;
     for (int i = 0; i < file_count; i++) {
-      argv[2 + i] = infiles_array[i];
+      argv[2 + i] = partitioned_files[i];
     }
 
     // if an old version exists, remove the output file
@@ -437,13 +410,12 @@ char** find_files(const char* pattern, int* count) {
     // if successful, remove the partitioned files
     if (iret == 0) {
       for (int i = 0; i < file_count; i++) {
-        remove(infiles_array[i]);
+        remove(partitioned_files[i]);
       }
     }
 
     // free memory
-    free(infiles_array);
-    free(infiles_in);
+    free(partitioned_files);
     free(argv);
 
     return iret;
