@@ -248,6 +248,7 @@ public :: read_restart_bc
 public :: flush_file
 public :: partitioned_global_files
 public :: partitioned_section_files 
+public :: append_to_filepath_list
 
 !> @ingroup netcdf_io_mod
 interface netcdf_add_restart_variable
@@ -691,21 +692,21 @@ function netcdf_file_open(fileobj, path, mode, nc_format, pelist, is_restart, do
 
 end function netcdf_file_open
 
-subroutine append_to_filepath_list(fileobj, filepath_list)
-  class(FmsNetcdfFile_t), intent(in) :: fileobj !< File object.
+subroutine append_to_filepath_list(filepath, filepath_list)
+  character(len=*), intent(in) :: filepath
   type(filepath_list_type), pointer :: filepath_list !< File path list.
   type(filepath_list_type), pointer :: current
 
   if (.not. associated(filepath_list)) then
     allocate(filepath_list)
-    call string_copy(filepath_list%path, trim(fileobj%path))
+    call string_copy(filepath_list%path, trim(filepath))
   else
     current => filepath_list
     do while (associated(current%next))
       current => current%next
     enddo
     allocate(current%next)
-    call string_copy(current%next%path, trim(fileobj%path))
+    call string_copy(current%next%path, trim(filepath))
   endif
 end subroutine append_to_filepath_list
 
@@ -722,9 +723,9 @@ subroutine netcdf_file_close(fileobj)
     if (fileobj%path(len_trim(fileobj%path)-7:len_trim(fileobj%path)-4) == ".nc.") then
       select type(fileobj)
         type is (FmsNetcdfFile_t)
-          call append_to_filepath_list(fileobj, partitioned_section_files)
+          call append_to_filepath_list(fileobj%path, partitioned_section_files)
         class default ! FmsNetcdfDomainFile_t
-          call append_to_filepath_list(fileobj, partitioned_global_files)
+          call append_to_filepath_list(fileobj%path, partitioned_global_files)
       end select
     else if (fileobj%path(len_trim(fileobj%path)-2:len_trim(fileobj%path)) /= ".nc") then
       call error("netcdf_file_close: Encountered unexpected netcdf file suffix: "//trim(fileobj%path))

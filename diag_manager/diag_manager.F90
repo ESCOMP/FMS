@@ -239,7 +239,7 @@ use platform_mod
   USE fms_diag_outfield_mod, ONLY: fmsDiagOutfieldIndex_type, fmsDiagOutfield_type
   USE fms_diag_fieldbuff_update_mod, ONLY: fieldbuff_update, fieldbuff_copy_missvals, &
    & fieldbuff_copy_fieldvals
-  use netcdf_io_mod, ONLY: filepath_list_type, partitioned_global_files, partitioned_section_files
+  use netcdf_io_mod, ONLY: filepath_list_type, partitioned_global_files, partitioned_section_files, append_to_filepath_list
 
 #ifdef use_netCDF
   USE netcdf, ONLY: NF90_INT, NF90_FLOAT, NF90_CHAR
@@ -3735,6 +3735,7 @@ CONTAINS
     integer(c_int) :: niopes       ! Number of IO PEs participating in writing of global files
     integer :: f
     type(filepath_list_type), pointer :: current
+    type(filepath_list_type), pointer :: files_to_combine ! list of files to combined by this PE
     character(len=:), allocatable :: filepath
     character(kind=c_char, len=256) :: outfile
     integer :: stdout_unit
@@ -3746,6 +3747,7 @@ CONTAINS
     ! Part 1 : Global diag files
     ! loop through global diagnostic files to combine them in a round-robin fashion
     ! where each IO PE combines one file based on the IO PE index (pix) and the file index (f)
+    files_to_combine => null() ! initialize the list of files to be combined by this PE
     current => partitioned_global_files
     do while (associated(current))
       filepath = trim(adjustl(current%path))
@@ -3754,13 +3756,15 @@ CONTAINS
       ! get the number of files to combine (for the first file only). The number of files is the same for all global files.
       if (niopes == 0) niopes = num_partitioned_files(outfile)
 
+      if (niopes == -1) then
+        call error_mesg('diag_manager_mod::combine_files', 'num_partitioned_files failed', FATAL)
+      end if
+
       ! Read the IO PE index (pix) from the file suffix (e.g., 0000, 0001, etc.)
       read(filepath(len(filepath)-3:len(filepath)),*) pix
-
+      
       if (mod(f, niopes) == pix) then
-        !write(stdout_unit,*) 'Combining file' // trim(outfile)
-        ireturn = exec_mppnccombine(outfile)
-        if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed', FATAL)
+         call append_to_filepath_list(outfile, files_to_combine)
       end if
 
       current => current%next
@@ -3779,16 +3783,32 @@ CONTAINS
       ! get the smallest IO PE index of the set of IO PEs writing the current section file
       smallest_pix = smallest_pix_suffix(outfile)
 
+      if (smallest_pix == -1 ) then
+        call error_mesg('diag_manager_mod::combine_files', 'smallest_pix_suffix failed', FATAL)
+      end if
+
       !print *, "pix = ", pix, " filepath = ", trim(filepath), " smallest_pix = ", smallest_pix, pix == smallest_pix
 
       if (pix == smallest_pix) then
-        !write(stdout_unit,*) 'Combining file' // trim(outfile)
-        ireturn = exec_mppnccombine(outfile)
-        if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed', FATAL)
+        call append_to_filepath_list(outfile, files_to_combine)
       end if
 
       current => current%next
     end do
+
+    ! sync all PEs before combining files
+    call mpp_sync()
+
+    ! Part 3 : Combine all files in the list
+    if (associated(files_to_combine)) then
+       current => files_to_combine
+       do while (associated(current))
+          write(stdout_unit,*) ' Combining file ' // trim(outfile)
+          ireturn = exec_mppnccombine(current%path)
+          if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed for file ' // trim(current%path), FATAL)
+          current => current%next
+       end do
+    end if
 
   end subroutine combine_files
 

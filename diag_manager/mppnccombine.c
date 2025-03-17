@@ -279,7 +279,7 @@ int num_partitioned_files(const char* filepath) {
   if (result != 0) {
       // No matches or glob error
       globfree(&globbuf);
-      return 0;
+      return -1; // Return -1 to indicate error
   }
 
   int count = (int)globbuf.gl_pathc;
@@ -358,8 +358,8 @@ char** find_partitioned_files(const char* filepath, int* count) {
     int count = 0;
     char** files = find_partitioned_files(outfile, &count);
     if (files == NULL || count == 0) {
-        fprintf(stderr, "Error: no files matched or an error occurred\n");
-        return 1;
+        fprintf(stderr, "Error: no files matched or an error occurred while looking for smallest suffix for %s\n", outfile);
+        return -1; // Return -1 to indicate error
     }
     for (int i = 0; i < count; i++) {
         int suffix = atoi(files[i] + strlen(files[i]) - 4);
@@ -386,7 +386,7 @@ char** find_partitioned_files(const char* filepath, int* count) {
     // Expand the input files
     partitioned_files = find_partitioned_files(outfile, &file_count);
     if (partitioned_files == NULL || file_count == 0) {
-      fprintf(stderr, "Error: no files matched or an error occurred\n");
+      fprintf(stderr, "Error: no files matched or an error occurred while finding partitioned files for %s\n", outfile);
       return 1;
     }
 
