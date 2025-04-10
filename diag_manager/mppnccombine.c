@@ -390,13 +390,15 @@ char** find_partitioned_files(const char* filepath, int* count) {
       return 1;
     }
 
-    argc = 2 + file_count;
+    argc = 4 + file_count;
 
     argv = (char **)malloc(argc * sizeof(char *));
     argv[0] = "mppnccombine";
-    argv[1] = outfile;
+    argv[1] = "-f";
+    argv[2] = "-m";
+    argv[3] = outfile;
     for (int i = 0; i < file_count; i++) {
-      argv[2 + i] = partitioned_files[i];
+      argv[4 + i] = partitioned_files[i];
     }
 
     // if an old version exists, remove the output file

@@ -3733,7 +3733,8 @@ CONTAINS
     integer(c_int) :: smallest_pix ! The smallest IO PE index of the set of IO PEs writing the current section file.
     integer(c_int) :: ireturn      ! Return code from mppnccombine
     integer(c_int) :: niopes       ! Number of IO PEs participating in writing of global files
-    integer :: f
+    integer :: f                   ! File index for the global diagnostic files          
+    integer :: pix_order           ! 0-based order of the IO PE in the list of all IO PEs writing the file.
     type(filepath_list_type), pointer :: current
     type(filepath_list_type), pointer :: files_to_combine ! list of files to combined by this PE
     character(len=:), allocatable :: filepath
@@ -3753,17 +3754,17 @@ CONTAINS
       filepath = trim(adjustl(current%path))
       outfile = filepath(1:len(filepath)-5) // c_null_char
 
-      ! get the number of files to combine (for the first file only). The number of files is the same for all global files.
-      if (niopes == 0) niopes = num_partitioned_files(outfile)
+      ! get the number of files to combine (for the first global file only). The number of files is the 
+      ! same for all global files. Similarly, get pix and pix_order for the first file only, since for 
+      ! all global files, the pix and pix_order are the same.
+      if (niopes == 0) then
+         niopes = num_partitioned_files(outfile)
+         if (niopes == -1) call error_mesg('diag_manager_mod::combine_files', 'num_partitioned_files failed', FATAL)
+         read(filepath(len(filepath)-3:len(filepath)),*) pix
+         pix_order = get_pix_order(filepath, niopes, pix)
+      endif
 
-      if (niopes == -1) then
-        call error_mesg('diag_manager_mod::combine_files', 'num_partitioned_files failed', FATAL)
-      end if
-
-      ! Read the IO PE index (pix) from the file suffix (e.g., 0000, 0001, etc.)
-      read(filepath(len(filepath)-3:len(filepath)),*) pix
-      
-      if (mod(f, niopes) == pix) then
+      if (mod(f, niopes) == pix_order) then
          call append_to_filepath_list(outfile, files_to_combine)
       end if
 
@@ -3803,7 +3804,7 @@ CONTAINS
     if (associated(files_to_combine)) then
        current => files_to_combine
        do while (associated(current))
-          write(stdout_unit,*) ' Combining file ' // trim(outfile)
+          write(stdout_unit,*) ' Combining file ' // filepath(1:len(filepath)-5)
           ireturn = exec_mppnccombine(current%path)
           if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed for file ' // trim(current%path), FATAL)
           current => current%next
@@ -3811,6 +3812,52 @@ CONTAINS
     end if
 
   end subroutine combine_files
+
+  !> Given a filename and pix (process id for an IO PE), return the order of the pix
+  !! in the list of all IO PEs writing the file. The order is determined by the
+  !! order of the file suffixes (e.g., 0000, 0001, etc.) in the file name. For example,
+  !! In a list of files with suffixes [0001, 0003, 0004], the order of pix 0003
+  !! is 1, and the order of pix 0004 is 2.
+  function get_pix_order(filename, num_files, pix) result(pix_order)
+      character(len=*), intent(in) :: filename
+      integer, intent(in) :: num_files
+      integer, intent(in) :: pix ! 0-based id of the IO PE
+      ! local
+      integer :: pix_order       ! 0-based order of the pix in the list of all IO PEs writing the file
+      character(len=4) :: suffix ! 0000, 0001, etc.
+      integer :: npes            ! total number of all PEs 
+      integer :: i, f
+      logical :: exists
+   
+      npes = mpp_npes()
+      pix_order = -1
+
+      i = 0
+      do f=0, num_files-1
+         ! Increment i until a file with the suffix i is found
+         do while (i<npes)
+            write (suffix, '(i4.4)') i
+            inquire(file=filename(1:len(filename)-4)//suffix, exist=exists)
+            if (exists) exit
+            i = i + 1
+         end do
+
+         ! If the file with the suffix i is found, check if it matches the pix,
+         ! which means that pix is the f.th IO PE in the list of all IO PEs writing the file
+         if (pix == i) then
+            pix_order = f
+            exit
+         end if
+
+         i = i + 1
+      end do
+
+      if (pix_order == -1) then
+         write(*,*) 'Error: pix ', pix, ' not found in file ', filename
+         call error_mesg('diag_manager_mod::get_pix_order', 'pix not found in file', FATAL)
+      end if
+
+   end function get_pix_order
 
   !> @brief Replaces diag_manager_end; close just one file: files(file)
   SUBROUTINE closing_file(file, time)
