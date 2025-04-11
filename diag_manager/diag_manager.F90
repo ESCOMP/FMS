@@ -3804,7 +3804,7 @@ CONTAINS
     if (associated(files_to_combine)) then
        current => files_to_combine
        do while (associated(current))
-          write(stdout_unit,*) ' Combining file ' // filepath(1:len(filepath)-5)
+          !write(stdout_unit,*) ' Combining file ' // filepath(1:len(filepath)-5)
           ireturn = exec_mppnccombine(current%path)
           if (ireturn /= 0) call error_mesg('diag_manager_mod::combine_files', 'mppnccombine failed for file ' // trim(current%path), FATAL)
           current => current%next
