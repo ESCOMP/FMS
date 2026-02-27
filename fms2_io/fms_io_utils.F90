@@ -804,12 +804,20 @@ subroutine get_instance_filename(name_in,name_out)
   character(len=*), intent(inout) :: name_out !< name_in with the filename_appendix
 
   integer :: length !< Length of name_in
-  integer :: i !< no description
+  integer :: i !< Position index
+  integer :: mom6_pos !< Position of .mom6 substring
 
   length = len_trim(name_in)
   name_out = name_in(1:length)
 
   if(len_trim(filename_appendix) > 0) then
+     !< If .mom6 is in the filename, add the appendix right after it
+     mom6_pos = index(trim(name_in), ".mom6", back=.true.)
+     if (mom6_pos .ne. 0) then
+         name_out = name_in(1:mom6_pos+4)//trim(filename_appendix)//name_in(mom6_pos+5:length)
+         return
+     endif
+
      !< If .tileXX is in the filename add the appendix before it
      if (has_domain_tile_string(name_in)) then
          i = index(trim(name_in), ".tile", back=.true.)
